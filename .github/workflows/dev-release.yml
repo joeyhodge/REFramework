@@ -65,5 +65,5 @@ jobs:
           tag: ${{format('nightly-{0}-{1}', github.run_number, github.sha)}}
           artifacts: ${{github.workspace}}/artifacts/**/*.zip
           makeLatest: true
-          bodyFile: ${{github.workspace}}
+          bodyFile: ${{github.workspace}}/nightly-body.md
           allowUpdates: true
