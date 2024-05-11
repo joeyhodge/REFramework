@@ -7,6 +7,7 @@
 #include "ReClass.hpp"
 #include "RENativeArray.hpp"
 #include "renderer/RenderResource.hpp"
+#include "renderer/PipelineState.hpp"
 
 class REType;
 struct ID3D12Resource;
@@ -397,6 +398,12 @@ struct Fence {
 
 class RenderContext {
 public:
+    void set_pipeline_state(PipelineState* state);
+
+    // tgx and y are usually width and height
+    void dispatch_ray(uint32_t thread_group_x, uint32_t thread_group_y, uint32_t thread_group_z, Fence& fence);
+    void dispatch_32bit_constant(uint32_t thread_group_x, uint32_t thread_group_y, uint32_t thread_group_z, uint32_t constant, bool disable_uav_barrier);
+    void dispatch(uint32_t thread_group_x, uint32_t thread_group_y, uint32_t thread_group_z, bool disable_uav_barrier);
     void copy_texture(Texture* dest, Texture* src, Fence& fence);
     void copy_texture(Texture* dest, Texture* src) {
         Fence fence{};
