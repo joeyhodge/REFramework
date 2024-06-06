@@ -33,6 +33,10 @@ void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, v
         return hook->get_original<decltype(link_swapchain_to_cmd_queue)>()(rcx, rdx, r8, r9);
     }
 
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     spdlog::info("[Streamline] linkSwapchainToCmdQueue: {:x}", (uintptr_t)_ReturnAddress());
@@ -49,6 +53,39 @@ void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, v
 
     // Re-hooks present after the above function creates the swapchain
     // This allows the hook to immediately still function
+    // rather than waiting on the hook monitor to notice the hook isn't working
+    if (!hook_was_nullptr) {
+        g_framework->hook_d3d12();
+    }
+
+    return result;
+}
+
+HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* p_fullscreen_desc, IDXGIOutput* p_restrict_to_output, IDXGISwapChain** swap_chain) {
+    auto create_swap_chain_fn = s_create_swapchain_hook->get_original<decltype(D3D12Hook::create_swapchain)*>();
+
+    if (g_inside_d3d12_hook) {
+        spdlog::info("create_swapchain (inside D3D12 hook)");
+        return create_swap_chain_fn(factory, device, hwnd, desc, p_fullscreen_desc, p_restrict_to_output, swap_chain);
+    }
+
+    spdlog::info("create_swapchain called");
+
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
+    std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
+
+    bool hook_was_nullptr = g_d3d12_hook == nullptr;
+
+    if (g_d3d12_hook != nullptr && g_framework->get_d3d12_hook() != nullptr) {
+        g_framework->on_reset(); // Needed to prevent a crash due to resources hanging around
+        g_d3d12_hook->unhook(); // Removes all vtable hooks
+    }
+
+    const auto result = create_swap_chain_fn(factory, device, hwnd, desc, p_fullscreen_desc, p_restrict_to_output, swap_chain);
+
     // rather than waiting on the hook monitor to notice the hook isn't working
     if (!hook_was_nullptr) {
         g_framework->hook_d3d12();
@@ -325,10 +362,13 @@ bool D3D12Hook::hook() {
         return false;
     }
 
-    const auto ti = utility::rtti::get_type_info(swap_chain1);
-
     try {
-        const auto swapchain_classname = ti != nullptr ? std::string_view{ti->name()} : "unknown";
+        const auto ti = utility::rtti::get_type_info(swap_chain1);
+        const auto swapchain_classname = ti != nullptr && ti->name() != nullptr ? std::string_view{ti->name()} : "unknown";
+        const auto raw_name = ti != nullptr && ti->raw_name() != nullptr ? std::string_view{ti->raw_name()} : "unknown";
+
+        spdlog::info("Swapchain type info: {}", swapchain_classname);
+        spdlog::info("Swapchain raw type info: {}", raw_name);
         
         if (swapchain_classname.contains("interposer::DXGISwapChain")) { // DLSS3
             spdlog::info("Found Streamline (DLSSFG) swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
@@ -345,6 +385,8 @@ bool D3D12Hook::hook() {
 
 
     spdlog::info("Finding command queue offset");
+
+    m_command_queue_offset = 0;
 
     // Find the command queue offset in the swapchain
     for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
@@ -442,6 +484,12 @@ bool D3D12Hook::hook() {
 
         auto& present_fn = (*(void***)target_swapchain)[8]; // Present
         m_present_hook = std::make_unique<PointerHook>(&present_fn, &D3D12Hook::present);
+
+        if (s_create_swapchain_hook == nullptr) {
+            auto& create_swapchain_fn = (*(void***)factory)[15]; // CreateSwapChainForHwnd
+            s_create_swapchain_hook = std::make_unique<PointerHook>(&create_swapchain_fn, &D3D12Hook::create_swapchain);
+        }
+
         m_hooked = true;
     } catch (const std::exception& e) {
         spdlog::error("Failed to initialize hooks: {}", e.what());
@@ -468,6 +516,10 @@ bool D3D12Hook::hook() {
 }
 
 bool D3D12Hook::unhook() {
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     if (!m_hooked) {
@@ -488,6 +540,10 @@ bool D3D12Hook::unhook() {
 thread_local int32_t g_present_depth = 0;
 
 HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_interval, uint64_t flags, void* r9) {
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     auto d3d12 = g_d3d12_hook;
@@ -620,6 +676,10 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 thread_local int32_t g_resize_buffers_depth = 0;
 
 HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags) {
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     spdlog::info("D3D12 resize buffers called");
@@ -705,6 +765,10 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
 thread_local int32_t g_resize_target_depth = 0;
 
 HRESULT WINAPI D3D12Hook::resize_target(IDXGISwapChain3* swap_chain, const DXGI_MODE_DESC* new_target_parameters) {
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     spdlog::info("D3D12 resize target called");
@@ -786,21 +850,3 @@ HRESULT WINAPI D3D12Hook::resize_target(IDXGISwapChain3* swap_chain, const DXGI_
 
     return result;
 }
-
-/*HRESULT WINAPI D3D12Hook::create_swap_chain(IDXGIFactory4* factory, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* p_fullscreen_desc, IDXGIOutput* p_restrict_to_output, IDXGISwapChain** swap_chain)
-{
-    spdlog::info("D3D12 create swapchain called");
-
-    auto d3d12 = g_d3d12_hook;
-
-    d3d12->m_command_queue = (ID3D12CommandQueue*)device;
-    
-    if (d3d12->m_on_create_swap_chain) {
-        d3d12->m_on_create_swap_chain(*d3d12);
-    }
-
-    auto create_swap_chain_fn = d3d12->m_create_swap_chain_hook->get_original<decltype(D3D12Hook::create_swap_chain)>();
-
-    return create_swap_chain_fn(factory, device, hwnd, desc, p_fullscreen_desc, p_restrict_to_output, swap_chain);
-}*/
-
