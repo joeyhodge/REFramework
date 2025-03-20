@@ -18,7 +18,6 @@ extern "C" {
 #include <imgui.h>
 #include <ImGuizmo.h>
 #include <imnodes.h>
-#include "re2-imgui/af_baidu.hpp"
 #include "re2-imgui/af_faprolight.hpp"
 #include "re2-imgui/font_robotomedium.hpp"
 #include "re2-imgui/imgui_impl_dx11.h"
@@ -33,6 +32,7 @@ extern "C" {
 #include "Mods.hpp"
 #include "mods/LooseFileLoader.hpp"
 #include "mods/PluginLoader.hpp"
+#include "mods/VR.hpp"
 #include "sdk/REGlobals.hpp"
 #include "sdk/Application.hpp"
 #include "sdk/SDK.hpp"
@@ -889,9 +889,14 @@ void REFramework::on_frame_d3d11() {
 
     m_d3d11_hook->get_device()->GetImmediateContext(&context);
     context->ClearRenderTargetView(m_d3d11.blank_rt_rtv.Get(), clear_color);
-    context->ClearRenderTargetView(m_d3d11.rt_rtv.Get(), clear_color);
-    context->OMSetRenderTargets(1, m_d3d11.rt_rtv.GetAddressOf(), NULL);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+    // Only render this if VR is running.
+    // TODO: Instead use this as an SRV to render to the back buffer so we don't render twice.
+    if (VR::get()->is_hmd_active()) {
+        context->ClearRenderTargetView(m_d3d11.rt_rtv.Get(), clear_color);
+        context->OMSetRenderTargets(1, m_d3d11.rt_rtv.GetAddressOf(), NULL);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());    
+    }
 
     // Set the back buffer to be the render target.
     context->OMSetRenderTargets(1, m_d3d11.bb_rtv.GetAddressOf(), nullptr);
@@ -1030,25 +1035,31 @@ void REFramework::on_frame_d3d12() {
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = m_d3d12.get_rt(D3D12::RTV::IMGUI).Get();
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
 
-        float clear_color[]{0.0f, 0.0f, 0.0f, 0.0f};
         D3D12_CPU_DESCRIPTOR_HANDLE rts[1]{};
-        cmd_ctx->cmd_list->ClearRenderTargetView(m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI), clear_color, 0, nullptr);
-        rts[0] = m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI);
-        cmd_ctx->cmd_list->OMSetRenderTargets(1, rts, FALSE, NULL);
-        cmd_ctx->cmd_list->SetDescriptorHeaps(1, m_d3d12.srv_desc_heap.GetAddressOf());
 
-        ImGui::GetIO().BackendRendererUserData = m_d3d12.imgui_backend_datas[1];
-        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmd_ctx->cmd_list.Get());
-        
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
+        // Only render this if VR is running.
+        // TODO: Instead use this as an SRV to render to the back buffer so we don't render twice.
+        if (VR::get()->is_hmd_active()) {
+            barrier.Transition.pResource = m_d3d12.get_rt(D3D12::RTV::IMGUI).Get();
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
+    
+            float clear_color[]{0.0f, 0.0f, 0.0f, 0.0f};
+            cmd_ctx->cmd_list->ClearRenderTargetView(m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI), clear_color, 0, nullptr);
+            rts[0] = m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI);
+            cmd_ctx->cmd_list->OMSetRenderTargets(1, rts, FALSE, NULL);
+            cmd_ctx->cmd_list->SetDescriptorHeaps(1, m_d3d12.srv_desc_heap.GetAddressOf());
+    
+            ImGui::GetIO().BackendRendererUserData = m_d3d12.imgui_backend_datas[1];
+            ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmd_ctx->cmd_list.Get());
+            
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
+        }
 
         // Draw to the back buffer.
         barrier.Transition.pResource = m_d3d12.rts[bb_index].Get();
@@ -1457,9 +1468,21 @@ void REFramework::update_fonts() {
     // replace '?' to most flag in WorldObjectsViewer
     ImFontConfig custom_icons{}; 
     custom_icons.FontDataOwnedByAtlas = false;
-    ImFont* fsload = (INVALID_FILE_ATTRIBUTES != ::GetFileAttributesA("reframework_pictographic.mode"))
-        ? fonts->AddFontFromMemoryTTF((void*)af_baidu_ptr, af_baidu_size, (float)m_font_size, &custom_icons, fonts->GetGlyphRangesChineseFull())
-        : fonts->AddFontFromMemoryCompressedTTF(RobotoMedium_compressed_data, RobotoMedium_compressed_size, (float)m_font_size);
+
+    const ImWchar cjk_ranges[] = {
+        0x0020, 0x00FF, // Basic Latin + Latin Supplement
+        0x2000, 0x206F, // General Punctuation
+        0x3000, 0x30FF, // CJK Symbols and Punctuations, Hiragana, Katakana
+        0x3131, 0x3163, // Korean alphabets
+        0x31F0, 0x31FF, // Katakana Phonetic Extensions
+        0xAC00, 0xD7A3, // Korean characters
+        0xFF00, 0xFFEF, // Half-width characters
+        0xFFFD, 0xFFFD, // Invalid
+        0x4e00, 0x9FAF, // CJK Ideograms,
+        0
+    };
+
+    ImFont* fsload = fonts->AddFontFromMemoryCompressedTTF((void*)RobotoCJKSC_Medium_compressed_data, RobotoCJKSC_Medium_compressed_size, (float)m_font_size, &custom_icons, cjk_ranges);
 
     // https://fontawesome.com/
     custom_icons.PixelSnapH = true;
@@ -1634,7 +1657,7 @@ void REFramework::draw_about() {
             License{ "cimgui", license::cimgui },
             License{ "minhook", license::minhook },
             License{ "spdlog", license::spdlog },
-            License{ "robotomedium", license::roboto },
+            License{ "robotocjksc", license::roboto_cjk },
             License{ "openvr", license::openvr },
             License{ "lua", license::lua },
             License{ "sol", license::sol },
@@ -2274,19 +2297,19 @@ bool REFramework::init_d3d12() {
 
     spdlog::info("[D3D12] Creating render targets...");
 
+    auto swapchain = m_d3d12_hook->get_swap_chain();
+
+    DXGI_SWAP_CHAIN_DESC swapchain_desc{};
+
+    if (FAILED(swapchain->GetDesc(&swapchain_desc))) {
+        spdlog::error("[D3D12] Failed to get swap chain description.");
+        return false;
+    }
+
+    spdlog::info("[D3D12] Swapchain buffer count: {}", swapchain_desc.BufferCount);
+
     {
         // Create back buffer rtvs.
-        auto swapchain = m_d3d12_hook->get_swap_chain();
-
-        DXGI_SWAP_CHAIN_DESC swapchain_desc{};
-
-        if (FAILED(swapchain->GetDesc(&swapchain_desc))) {
-            spdlog::error("[D3D12] Failed to get swap chain description.");
-            return false;
-        }
-        
-        spdlog::info("[D3D12] Swapchain buffer count: {}", swapchain_desc.BufferCount);
-
         if (swapchain_desc.BufferCount > (int)D3D12::RTV::BACKBUFFER_LAST + 1) {
             spdlog::warn("[D3D12] Too many back buffers ({} vs {}).", swapchain_desc.BufferCount, (int)D3D12::RTV::BACKBUFFER_LAST + 1);
         }
@@ -2356,7 +2379,7 @@ bool REFramework::init_d3d12() {
     auto& bb = m_d3d12.get_rt(D3D12::RTV::BACKBUFFER_0);
     auto bb_desc = bb->GetDesc();
 
-    if (!ImGui_ImplDX12_Init(device, 3, bb_desc.Format, m_d3d12.srv_desc_heap.Get(),
+    if (!ImGui_ImplDX12_Init(device, swapchain_desc.BufferCount, bb_desc.Format, m_d3d12.srv_desc_heap.Get(),
             m_d3d12.get_cpu_srv(device, D3D12::SRV::IMGUI_FONT_BACKBUFFER), m_d3d12.get_gpu_srv(device, D3D12::SRV::IMGUI_FONT_BACKBUFFER))) {
         spdlog::error("[D3D12] Failed to initialize ImGui.");
         return false;
@@ -2370,7 +2393,7 @@ bool REFramework::init_d3d12() {
     auto& bb_vr = m_d3d12.get_rt(D3D12::RTV::IMGUI);
     auto bb_vr_desc = bb_vr->GetDesc();
 
-    if (!ImGui_ImplDX12_Init(device, 3, bb_vr_desc.Format, m_d3d12.srv_desc_heap.Get(),
+    if (!ImGui_ImplDX12_Init(device, swapchain_desc.BufferCount, bb_vr_desc.Format, m_d3d12.srv_desc_heap.Get(),
             m_d3d12.get_cpu_srv(device, D3D12::SRV::IMGUI_FONT_VR), m_d3d12.get_gpu_srv(device, D3D12::SRV::IMGUI_FONT_VR))) {
         spdlog::error("[D3D12] Failed to initialize ImGui.");
         return false;
