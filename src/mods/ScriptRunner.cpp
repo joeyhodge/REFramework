@@ -135,6 +135,9 @@ ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data,bool 
     os["setlocale"] = sol::nil;
     os["getenv"] = sol::nil;
 
+    auto debug = m_lua["debug"];
+    debug["getregistry"] = sol::nil;
+
     bindings::open_sdk(this);
     bindings::open_imgui(this);
     bindings::open_json(this);
@@ -374,6 +377,15 @@ ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data,bool 
     );
 
     m_lua["reframework"] = g_framework.get();
+    m_lua.registry()["package_path"] = m_lua["package"]["path"];
+    m_lua.registry()["package_cpath"] = m_lua["package"]["cpath"];
+    m_lua.registry()["package_searchers"] = m_lua.create_table();
+
+    sol::table package_searchers = m_lua["package"]["searchers"];
+
+    for (auto&& [k, v] : package_searchers) {
+        m_lua.registry()["package_searchers"][k] = v;
+    }
 
     // clang-format on
     //callback function removed from constructor and moved out into script runner
@@ -398,7 +410,12 @@ void ScriptState::run_script(const std::string& p) {
 
     spdlog::info("[ScriptState] Running script {}...", p);
 
-    std::string old_path = m_lua["package"]["path"];
+    m_lua["package"]["path"] = m_lua.registry()["package_path"];
+    m_lua["package"]["cpath"] = m_lua.registry()["package_cpath"];
+
+    const std::string old_pristine_path = m_lua.registry()["package_path"];
+    const std::string old_pristine_cpath = m_lua.registry()["package_cpath"];
+    const std::string old_path = m_lua["package"]["path"];
 
     try {
         auto path = std::filesystem::path(p);
@@ -411,6 +428,9 @@ void ScriptState::run_script(const std::string& p) {
         package_path = package_path + ";" + dir.string() + "/?.dll";
 
         m_lua["package"]["path"] = package_path;
+        m_lua.registry()["package_path"] = m_lua["package"]["path"];
+        m_lua.registry()["package_cpath"] = m_lua["package"]["cpath"];
+
         m_lua.safe_script_file(p);
     } catch (const std::exception& e) {
         ScriptRunner::get()->spew_error(e.what());
@@ -421,6 +441,8 @@ void ScriptState::run_script(const std::string& p) {
     }
 
     m_lua["package"]["path"] = old_path;
+    m_lua.registry()["package_path"] = old_pristine_path;
+    m_lua.registry()["package_cpath"] = old_pristine_cpath;
 }
 
 // i have to wonder why this isn't in sol when they have safe_script stuff
@@ -465,6 +487,22 @@ void ScriptState::on_draw_ui() {
 
     api::imgui::cleanup();
     api::imnodes::cleanup();
+}
+
+void ScriptState::on_update_transform(RETransform* transform) {
+    try {
+        if (m_on_update_transform_fns.empty()) {
+            return;
+        }
+        if (m_on_update_transform_fns.find(transform) != m_on_update_transform_fns.end()) {
+            std::scoped_lock _{m_execution_mutex};
+            handle_protected_result(m_on_update_transform_fns[transform](transform));
+        }
+    } catch (const std::exception& e) {
+        ScriptRunner::get()->spew_error(e.what());
+    } catch (...) {
+        ScriptRunner::get()->spew_error("Unknown exception in on_update_transform");
+    }
 }
 
 void ScriptState::on_pre_application_entry(size_t hash) {
@@ -611,6 +649,11 @@ void ScriptState::add_hook(
 
 void ScriptState::add_vtable(::REManagedObject* obj, sdk::REMethodDefinition* fn, sol::protected_function pre_cb, sol::protected_function post_cb) {
     m_hooks_to_add.emplace_back(obj, fn, pre_cb, post_cb);
+}
+
+void ScriptState::add_update_transform(RETransform* transform, sol::protected_function fn) {
+    ScriptRunner::get()->on_add_update_transform();
+    m_on_update_transform_fns[transform] = fn;
 }
 
 void ScriptState::install_hooks() {
@@ -1150,6 +1193,26 @@ void ScriptRunner::on_draw_ui() {
     }
 }
 
+void ScriptRunner::on_update_transform(RETransform* transform) {
+    if (!m_has_any_transform_updates) {
+        return;
+    }
+
+    std::scoped_lock _{m_access_mutex};
+
+    if (m_states.empty()) {
+        return;
+    }
+
+    if (m_last_online_match_state) {
+        return;
+    }
+
+    for (auto& state : m_states) {
+        state->on_update_transform(transform);
+    }
+}
+
 void ScriptRunner::on_pre_application_entry(void* entry, const char* name, size_t hash) {
     std::scoped_lock _{ m_access_mutex };
 
@@ -1264,6 +1327,9 @@ void ScriptRunner::reset_scripts() {
     // the FirstPerson mod would attempt to hook an already hooked function
     m_main_state.reset();
     m_states.clear();
+
+    m_has_any_transform_updates = false;
+
     //creating the main lua state
     m_main_state = std::make_shared<ScriptState>(make_gc_data(),true);
     //inserting it into the states vector
