@@ -558,11 +558,13 @@ REFramework::REFramework(HMODULE reframework_module)
 
     if (sdk::RETypeDB::get() != nullptr) {
         auto& loader = LooseFileLoader::get(); // Initialize this really early
+        auto &integrity_bypass = IntegrityCheckBypass::get_shared_instance();
 
         const auto config_path = get_persistent_dir(REFrameworkConfig::REFRAMEWORK_CONFIG_NAME.data()).string();
         if (fs::exists(utility::widen(config_path))) {
             utility::Config cfg{ config_path };
             loader->on_config_load(cfg);
+            integrity_bypass->on_config_load(cfg);
         }
 
         if (loader->is_enabled()) {
@@ -589,7 +591,7 @@ REFramework::REFramework(HMODULE reframework_module)
                 }
 
                 if (std::string_view{t->get_name()} == "Renderer" && std::string_view{t->get_namespace()} == "via.render") {
-                    spdlog::info("Renderer type found manually");
+                    spdlog::info("Renderer type found manually @ {:x}", (uintptr_t)t);
                     renderer_t = t;
                     break;
                 }
@@ -635,9 +637,15 @@ REFramework::REFramework(HMODULE reframework_module)
         continue;
     }
     
-    spdlog::info("Found renderer, waiting for first frame...");
+    spdlog::info("Found renderer @ {:x} (type: {:x}), waiting for first frame...", (uintptr_t)renderer, (uintptr_t)renderer_t);
 
     bool valid_render_frame = false;
+
+    if (renderer_has_render_frame_fn) {
+        spdlog::info("Renderer has get_RenderFrame function");
+    } else {
+        spdlog::info("Renderer does not have get_RenderFrame function");
+    }
 
     while (renderer_has_render_frame_fn) try {
         // This function is static so its fine if renderer is null.
@@ -1635,8 +1643,8 @@ void REFramework::draw_ui() {
         m_windows_message_hook->window_toggle_cursor(true);
     }
 
-    ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_Once);
+    ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_FirstUseEver);
 
     ImGui::PushFont(m_default_font, m_font_size);
     static const auto REF_NAME = std::format("REFramework [{}+{}-{:.8}]", REF_TAG, REF_COMMITS_PAST_TAG, REF_COMMIT_HASH);
