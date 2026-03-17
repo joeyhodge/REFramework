@@ -4,8 +4,23 @@
 
 namespace utility::re_component {
     static auto get_game_object(::REComponent* comp) {
-        //return utility::re_managed_object::get_field<::REGameObject*>(comp, "GameObject");
-        return comp->ownerGameObject;
+        if (comp == nullptr) {
+            return (::REGameObject*)nullptr;
+        }
+
+        if (comp->ownerGameObject != nullptr) {
+            return comp->ownerGameObject;
+        }
+
+        if (auto reflected = utility::re_managed_object::get_field<::REGameObject*>(comp, "GameObject"); reflected != nullptr) {
+            return reflected;
+        }
+
+        if (auto reflected = utility::re_managed_object::get_field<::REGameObject*>(comp, "OwnerGameObject"); reflected != nullptr) {
+            return reflected;
+        }
+
+        return utility::re_managed_object::get_field<::REGameObject*>(comp, "_OwnerGameObject_k__BackingField");
     }
 
     static auto get_valid(::REComponent* comp) {
