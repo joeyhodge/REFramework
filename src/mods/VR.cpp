@@ -220,10 +220,10 @@ void VR::on_view_get_size(REManagedObject* scene_view, float* result) {
     // but rather update the current scene view's size directly.
     regenny_view->size.w = wanted_width;
     regenny_view->size.h = wanted_height;
-    //regenny_view->custom_display_size.w = wanted_width;
-    //regenny_view->custom_display_size.h = wanted_height;
-    //regenny_view->present_rect.w = wanted_width;
-    //regenny_view->present_rect.h = wanted_height;
+    regenny_view->custom_display_size.w = wanted_width;
+    regenny_view->custom_display_size.h = wanted_height;
+    regenny_view->present_rect.w = wanted_width;
+    regenny_view->present_rect.h = wanted_height;
 #endif
 }
 
@@ -1402,9 +1402,11 @@ void VR::update_hmd_state() {
     // if this is not done, the left eye will jitter a lot
 #if defined(RE2) || defined(RE3)
     auto camera = sdk::get_primary_camera();
+    auto camera_game_object = utility::re_component::get_game_object(camera);
+    auto camera_transform = utility::re_game_object::get_transform(camera_game_object);
 
-    if (camera != nullptr && camera->ownerGameObject != nullptr && camera->ownerGameObject->transform != nullptr) {
-        FirstPerson::get()->on_update_transform(camera->ownerGameObject->transform);
+    if (camera_transform != nullptr) {
+        FirstPerson::get()->on_update_transform(camera_transform);
     }
 #endif
 }
@@ -1493,12 +1495,13 @@ void VR::update_camera() {
         m_needs_camera_restore = false;
 
         auto camera_object = utility::re_component::get_game_object(camera);
+        auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-        if (camera_object == nullptr || camera_object->transform == nullptr) {
+        if (camera_transform == nullptr) {
             return;
         }
 
-        auto camera_joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+        auto camera_joint = utility::re_transform::get_joint(*camera_transform, 0);
 
         if (camera_joint == nullptr) {
             return;
@@ -1552,14 +1555,15 @@ void VR::update_camera_origin() {
     }
 
     auto camera_object = utility::re_component::get_game_object(camera);
+    auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-    if (camera_object == nullptr || camera_object->transform == nullptr) {
+    if (camera_transform == nullptr) {
         spdlog::error("VR: Failed to get camera game object or transform!");
         m_needs_camera_restore = false;
         return;
     }
 
-    auto camera_joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+    auto camera_joint = utility::re_transform::get_joint(*camera_transform, 0);
 
     if (camera_joint == nullptr) {
         spdlog::error("VR: Failed to get camera joint!");
@@ -1653,12 +1657,13 @@ void VR::update_audio_camera() {
     }
 
     auto camera_object = utility::re_component::get_game_object(camera);
+    auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-    if (camera_object == nullptr || camera_object->transform == nullptr) {
+    if (camera_transform == nullptr) {
         return;
     }
 
-    auto camera_joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+    auto camera_joint = utility::re_transform::get_joint(*camera_transform, 0);
 
     if (camera_joint == nullptr) {
         return;
@@ -1688,12 +1693,13 @@ void VR::update_render_matrix() {
     }
 
     auto camera_object = utility::re_component::get_game_object(camera);
+    auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-    if (camera_object == nullptr || camera_object->transform == nullptr) {
+    if (camera_transform == nullptr) {
         return;
     }
 
-    auto camera_joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+    auto camera_joint = utility::re_transform::get_joint(*camera_transform, 0);
 
     if (camera_joint == nullptr) {
         return;
@@ -1723,15 +1729,16 @@ void VR::restore_audio_camera() {
     }
 
     auto camera_object = utility::re_component::get_game_object(camera);
+    auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-    if (camera_object == nullptr || camera_object->transform == nullptr) {
+    if (camera_transform == nullptr) {
         m_needs_audio_restore = false;
         return;
     }
 
-    //camera_object->transform->worldTransform = m_original_camera_matrix;
+    //camera_transform->worldTransform = m_original_camera_matrix;
 
-    auto joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+    auto joint = utility::re_transform::get_joint(*camera_transform, 0);
 
     if (joint == nullptr) {
         m_needs_audio_restore = false;
@@ -1764,15 +1771,16 @@ void VR::restore_camera() {
     }
 
     auto camera_object = utility::re_component::get_game_object(camera);
+    auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-    if (camera_object == nullptr || camera_object->transform == nullptr) {
+    if (camera_transform == nullptr) {
         m_needs_camera_restore = false;
         return;
     }
 
-    //camera_object->transform->worldTransform = m_original_camera_matrix;
+    //camera_transform->worldTransform = m_original_camera_matrix;
 
-    auto joint = utility::re_transform::get_joint(*camera_object->transform, 0);
+    auto joint = utility::re_transform::get_joint(*camera_transform, 0);
 
     if (joint == nullptr) {
         m_needs_camera_restore = false;
@@ -2348,6 +2356,7 @@ struct GUIRestoreData {
     REComponent* element{nullptr};
     REComponent* view{nullptr};
     Vector4f original_position{ 0.0f, 0.0f, 0.0f, 1.0f };
+    Matrix4x4f original_world_matrix{};
     via::gui::ViewType view_type{ via::gui::ViewType::Screen };
     bool overlay{false};
     bool detonemap{true};
@@ -2364,7 +2373,9 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
     auto game_object = utility::re_component::get_game_object(gui_element);
 
-    if (game_object != nullptr && game_object->transform != nullptr) {
+    auto game_object_transform = utility::re_game_object::get_transform(game_object);
+
+    if (game_object != nullptr && game_object_transform != nullptr) {
         auto context = sdk::get_thread_context();
 
         const auto name = utility::re_game_object::get_name(game_object);
@@ -2464,7 +2475,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 // we don't want to mess with any game object that has a mesh
                 // because it might be something physical in the game world
                 // that the player can interact with
-                if (utility::re_component::find(game_object->transform, via_render_mesh_typedef->get_type()) != nullptr) {
+                if (utility::re_component::find(game_object_transform, via_render_mesh_typedef->get_type()) != nullptr) {
                     return true;
                 }
 
@@ -2476,11 +2487,12 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 const auto world_ui_scale = m_world_ui_scale_option->value();
 
                 auto& restore_data = g_elements_to_reset.emplace_back(std::make_unique<GUIRestoreData>());
-                auto original_game_object_pos = sdk::get_transform_position(game_object->transform);
+                auto original_game_object_pos = sdk::get_transform_position(game_object_transform);
 
                 restore_data->element = gui_element;
                 restore_data->view = view;
                 restore_data->original_position = original_game_object_pos;
+                restore_data->original_world_matrix = game_object_transform->worldTransform;
                 restore_data->overlay = sdk::call_object_func<bool>(view, "get_Overlay", context, view);
                 restore_data->detonemap = sdk::call_object_func<bool>(view, "get_Detonemap", context, view);
                 restore_data->view_type = (via::gui::ViewType)current_view_type;
@@ -2511,9 +2523,10 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 // Set the gui element's position to be in front of the camera
                 if (camera != nullptr) {
                     auto camera_object = utility::re_component::get_game_object(camera);
+                    auto camera_transform = utility::re_game_object::get_transform(camera_object);
 
-                    if (camera_object != nullptr && camera_object->transform != nullptr) {
-                        auto& gui_matrix = game_object->transform->worldTransform;
+                    if (camera_transform != nullptr) {
+                        auto& gui_matrix = game_object_transform->worldTransform;
                         auto child = sdk::call_object_func<REManagedObject*>(view, "get_Child", context, view);
 
                         auto fix_2d_position = [&](const Vector4f& target_position, 
@@ -2543,8 +2556,8 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                             // LESSON: DO NOT CALL THESE METHODS ON THE TRANSFORM!
                             // THEY CAUSE SOME STRANGE BUGS WHEN THE GUI ELEMENT HAS A PARENT TRANSFORM!
                             // THE GUI RENDERING FUNCTIONS PERFORM ON THE WORLD MATRIX, SO THIS IS NOT NECESSARY.
-                            //sdk::set_transform_position(game_object->transform, new_pos);
-                            //sdk::set_transform_rotation(game_object->transform, look_rot);
+                            //sdk::set_transform_position(game_object_transform, new_pos);
+                            //sdk::set_transform_rotation(game_object_transform, look_rot);
                             
                             const auto scaled_ui_scale = *custom_ui_scale * 0.01f;
                             const auto distance = glm::length(delta);
@@ -2586,7 +2599,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                             // Fix for other kinds of world pos attach elements.
 #ifdef RE7
                             if (name_hash == "InteractOperationCursor"_fnv) {
-                                auto world_pos_attach_comp = utility::re_component::find(game_object->transform, ui_world_pos_attach_typedef->get_type());
+                                auto world_pos_attach_comp = utility::re_component::find(game_object_transform, ui_world_pos_attach_typedef->get_type());
 
                                 // Fix the world position of the gui element
                                 if (world_pos_attach_comp != nullptr) {
@@ -2606,8 +2619,6 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
                             gui_matrix = glm::scale(gui_matrix, Vector3f{ scale, scale, scale });
                         };
-
-                        auto camera_transform = camera_object->transform;
 
                         const auto& camera_matrix = m_original_camera_matrix;
                         const auto& camera_position = camera_matrix[3];
@@ -2751,15 +2762,16 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                         
                             fix_2d_position(original_game_object_pos);
                         } else if(gui_driver_typedef != nullptr) { // RE8
-                            auto interact_icon_comp = utility::re_component::find(game_object->transform, gui_driver_typedef->get_type());
+                            auto interact_icon_comp = utility::re_component::find(game_object_transform, gui_driver_typedef->get_type());
 
                             if (interact_icon_comp != nullptr) {
                                 auto interact_icon_object = sdk::call_object_func<REGameObject*>(interact_icon_comp, "get_attachTarget", context, interact_icon_comp);
+                                auto interact_icon_transform = utility::re_game_object::get_transform(interact_icon_object);
 
-                                if (interact_icon_object != nullptr && interact_icon_object->transform != nullptr) {
+                                if (interact_icon_transform != nullptr) {
                                     // call get_Position on the object
                                     Vector4f interact_icon_position{};
-                                    sdk::call_object_func<Vector4f*>(interact_icon_object->transform, "get_Position", &interact_icon_position, context, interact_icon_object->transform);
+                                    sdk::call_object_func<Vector4f*>(interact_icon_transform, "get_Position", &interact_icon_position, context, interact_icon_transform);
 
                                     fix_2d_position(interact_icon_position);
                                 }
@@ -2771,14 +2783,14 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                                     continue;
                                 }
 
-                                auto element_comp = utility::re_component::find(game_object->transform, element_type->get_type());
+                                auto element_comp = utility::re_component::find(game_object_transform, element_type->get_type());
 
                                 if (element_comp == nullptr) {
                                     continue;
                                 }
 
-                                static auto get_parent_method = sdk::get_object_method(game_object->transform, "get_Parent");
-                                auto parent = get_parent_method->call<::RETransform*>(context, game_object->transform);
+                                static auto get_parent_method = sdk::get_object_method(game_object_transform, "get_Parent");
+                                auto parent = get_parent_method->call<::RETransform*>(context, game_object_transform);
 
                                 if (parent != nullptr) {
                                     Vector4f offset{};
@@ -2851,7 +2863,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
                         // ... RE7
 #ifdef RE7
-                        auto world_pos_attach_comp = utility::re_component::find(game_object->transform, ui_world_pos_attach_typedef->get_type());
+                        auto world_pos_attach_comp = utility::re_component::find(game_object_transform, ui_world_pos_attach_typedef->get_type());
 
                         // Fix the world position of the gui element
                         if (world_pos_attach_comp != nullptr) {
@@ -2884,11 +2896,11 @@ void VR::on_gui_draw_element(REComponent* gui_element, void* primitive_context) 
         
         auto game_object = utility::re_component::get_game_object(data->element);
 
-        if (game_object != nullptr && game_object->transform != nullptr) {
-            //sdk::set_transform_position(game_object->transform, data->original_position);
+        auto game_object_transform = utility::re_game_object::get_transform(game_object);
 
-            auto& gui_matrix = game_object->transform->worldTransform;
-            gui_matrix[3] = data->original_position;
+        if (game_object_transform != nullptr) {
+            //sdk::set_transform_position(game_object_transform, data->original_position);
+            game_object_transform->worldTransform = data->original_world_matrix;
         }
     }
 
