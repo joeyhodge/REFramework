@@ -47,7 +47,6 @@
 #include "sdk/Renderer.hpp"
 #include "sdk/REMath.hpp"
 #include "sdk/REGameObject.hpp"
-
 #include "utility/Scan.hpp"
 #include "utility/FunctionHook.hpp"
 #include "utility/Module.hpp"
@@ -85,6 +84,7 @@ void VR::on_view_get_size(REManagedObject* scene_view, float* result) {
     // There are some very dumb optimizations that cause set_DisplayType
     // to go through this hook. This function is actually something like "updateSceneView"
     static thread_local bool already_inside = false;
+    static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
 
     if (already_inside) {
         return;
@@ -211,6 +211,13 @@ void VR::on_view_get_size(REManagedObject* scene_view, float* result) {
         //return original_func(scene_view, result);
     }
 
+    // Apollo GS4 drives animated portrait/object layers with fixed pixel-space
+    // coordinates. Keeping the backbuffer at HMD size is fine, but rewriting
+    // every SceneView size can blank those layers.
+    if (is_apollo_justice) {
+        return;
+    }
+
     // spoof the size to the HMD's size
 #if TDB_VER < 73
     result[0] = wanted_width;
@@ -220,10 +227,9 @@ void VR::on_view_get_size(REManagedObject* scene_view, float* result) {
     // but rather update the current scene view's size directly.
     regenny_view->size.w = wanted_width;
     regenny_view->size.h = wanted_height;
-    regenny_view->custom_display_size.w = wanted_width;
-    regenny_view->custom_display_size.h = wanted_height;
-    regenny_view->present_rect.w = wanted_width;
-    regenny_view->present_rect.h = wanted_height;
+    // Leave the other view sizing fields alone. On DD2/TDB73 games, forcing
+    // them globally can disturb non-GUI sprite/picture passes that share the
+    // same SceneView update path.
 #endif
 }
 
@@ -232,9 +238,10 @@ void VR::on_camera_get_projection_matrix(REManagedObject* camera, Matrix4x4f* re
         return;
     }
 
-    /*if (camera != sdk::get_primary_camera()) {
-        return original_func(camera, result);
-    }*/
+    static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+    if (is_apollo_justice && camera != sdk::get_primary_camera()) {
+        return;
+    }
 
     if (!m_in_render) {
        // return original_func(camera, result);
@@ -255,6 +262,11 @@ Matrix4x4f* VR::gui_camera_get_projection_matrix_hook(REManagedObject* camera, M
     auto& vr = VR::get();
 
     if (result == nullptr || !g_framework->is_ready() || !vr->is_hmd_active() || vr->m_disable_gui_camera_projection_matrix_override) {
+        return original_func(camera, result);
+    }
+
+    static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+    if (is_apollo_justice) {
         return original_func(camera, result);
     }
 
@@ -2353,16 +2365,229 @@ void VR::on_update_camera_controller(RopewayPlayerCameraController* controller) 
 }
 
 struct GUIRestoreData {
+    struct ApolloNitroRootRestore {
+        RETransform* transform{nullptr};
+        Vector4f original_raw_position{};
+        Vector4f original_raw_angles{};
+        Vector4f original_raw_scale{};
+        Matrix4x4f original_world_matrix{};
+    };
+
     REComponent* element{nullptr};
     REComponent* view{nullptr};
     Vector4f original_position{ 0.0f, 0.0f, 0.0f, 1.0f };
     Matrix4x4f original_world_matrix{};
+    uint32_t draw_order{0};
     via::gui::ViewType view_type{ via::gui::ViewType::Screen };
     bool overlay{false};
     bool detonemap{true};
 };
 
 thread_local std::vector<std::unique_ptr<GUIRestoreData>> g_elements_to_reset{};
+thread_local std::vector<GUIRestoreData::ApolloNitroRootRestore> g_apollo_nitro_roots_to_reset{};
+thread_local bool g_apollo_nitro_roots_applied{};
+
+static void apply_apollo_nitro_root_sync(const Matrix4x4f& gui_matrix) {
+    if (g_apollo_nitro_roots_applied) {
+        return;
+    }
+
+    static auto app_core_t = sdk::find_type_definition("app.gs4.AppCore");
+    static auto get_shared_instance_method = app_core_t != nullptr ? app_core_t->get_method("get_SharedInstance") : nullptr;
+    static auto app_field = app_core_t != nullptr ? app_core_t->get_field("m_app") : nullptr;
+
+    static auto nitro_layer_t = sdk::find_type_definition("app.gs4.NitroLayer");
+    static auto m_g2_field = nitro_layer_t != nullptr ? nitro_layer_t->get_field("m_G2") : nullptr;
+    static auto m_g2s_field = nitro_layer_t != nullptr ? nitro_layer_t->get_field("m_G2S") : nullptr;
+
+    static auto nitro_graphic_2d_t = sdk::find_type_definition("app.gs4.NitroGraphic2D");
+    static auto obj_root_field = nitro_graphic_2d_t != nullptr ? nitro_graphic_2d_t->get_field("ObjRoot") : nullptr;
+
+    if (get_shared_instance_method == nullptr || app_field == nullptr || m_g2_field == nullptr || m_g2s_field == nullptr || obj_root_field == nullptr) {
+        return;
+    }
+
+    auto app_core = get_shared_instance_method->call<REManagedObject*>(sdk::get_thread_context());
+
+    if (app_core == nullptr) {
+        return;
+    }
+
+    auto gs4 = app_field->get_data<REManagedObject*>(app_core);
+
+    if (gs4 == nullptr) {
+        return;
+    }
+
+    const auto gui_rotation = glm::quat{glm::extractMatrixRotation(gui_matrix)};
+    const Vector4f gui_angles{ gui_rotation.x, gui_rotation.y, gui_rotation.z, gui_rotation.w };
+    const Vector4f gui_scale{
+        glm::length(Vector3f{ gui_matrix[0].x, gui_matrix[0].y, gui_matrix[0].z }),
+        glm::length(Vector3f{ gui_matrix[1].x, gui_matrix[1].y, gui_matrix[1].z }),
+        glm::length(Vector3f{ gui_matrix[2].x, gui_matrix[2].y, gui_matrix[2].z }),
+        1.0f
+    };
+
+    const auto apply_root = [&](sdk::REField* nitro_field) {
+        auto nitro_graphic = nitro_field != nullptr ? nitro_field->get_data<REManagedObject*>(gs4) : nullptr;
+
+        if (nitro_graphic == nullptr) {
+            return;
+        }
+
+        auto obj_root = obj_root_field->get_data<REGameObject*>(nitro_graphic);
+        auto obj_root_transform = utility::re_game_object::get_transform(obj_root);
+
+        if (obj_root_transform == nullptr) {
+            return;
+        }
+
+        for (const auto& restore : g_apollo_nitro_roots_to_reset) {
+            if (restore.transform == obj_root_transform) {
+                return;
+            }
+        }
+
+        g_apollo_nitro_roots_to_reset.emplace_back(GUIRestoreData::ApolloNitroRootRestore{
+            obj_root_transform,
+            obj_root_transform->position,
+            obj_root_transform->angles,
+            obj_root_transform->scale,
+            obj_root_transform->worldTransform
+        });
+
+        obj_root_transform->angles = gui_angles;
+        obj_root_transform->scale = gui_scale;
+        obj_root_transform->worldTransform = gui_matrix;
+        sdk::set_transform_position(obj_root_transform, gui_matrix[3], true);
+    };
+
+    apply_root(m_g2_field);
+    apply_root(m_g2s_field);
+
+    g_apollo_nitro_roots_applied = !g_apollo_nitro_roots_to_reset.empty();
+}
+
+static void apply_apollo_cell_animation_rtt_workaround() {
+    static auto app_core_t = sdk::find_type_definition("app.gs4.AppCore");
+    static auto get_shared_instance_method = app_core_t != nullptr ? app_core_t->get_method("get_SharedInstance") : nullptr;
+    static auto app_field = app_core_t != nullptr ? app_core_t->get_field("m_app") : nullptr;
+
+    static auto gs4_system_layer_t = sdk::find_type_definition("app.gs4.GS4SystemLayer");
+    static auto regist_cell_list_field = gs4_system_layer_t != nullptr ? gs4_system_layer_t->get_field("registCellList") : nullptr;
+
+    static auto cell_anim_controller_t = sdk::find_type_definition("app.NitroGraphics.CellAnimationController");
+    static auto engine_type_field = cell_anim_controller_t != nullptr ? cell_anim_controller_t->get_field("<EngineType>k__BackingField") : nullptr;
+    static auto use_rtt_field = cell_anim_controller_t != nullptr ? cell_anim_controller_t->get_field("<UseRTT>k__BackingField") : nullptr;
+    static auto using_exclusive_texture_field = cell_anim_controller_t != nullptr ? cell_anim_controller_t->get_field("isUsingExclusiveTexture") : nullptr;
+    static auto set_use_rtt_method = cell_anim_controller_t != nullptr ? cell_anim_controller_t->get_method("set_UseRTT(System.Boolean)") : nullptr;
+
+    if (get_shared_instance_method == nullptr || app_field == nullptr || regist_cell_list_field == nullptr || engine_type_field == nullptr || use_rtt_field == nullptr || using_exclusive_texture_field == nullptr || set_use_rtt_method == nullptr) {
+        return;
+    }
+
+    auto context = sdk::get_thread_context();
+    auto app_core = get_shared_instance_method->call<REManagedObject*>(context);
+
+    if (app_core == nullptr) {
+        return;
+    }
+
+    auto gs4 = app_field->get_data<REManagedObject*>(app_core);
+
+    if (gs4 == nullptr) {
+        return;
+    }
+
+    auto regist_cell_list = regist_cell_list_field->get_data<REManagedObject*>(gs4);
+
+    if (regist_cell_list == nullptr) {
+        return;
+    }
+
+    auto items = sdk::get_object_field<sdk::SystemArray*>(regist_cell_list, "_items");
+    auto size = sdk::get_object_field<int32_t>(regist_cell_list, "_size");
+
+    if (items == nullptr || *items == nullptr || size == nullptr || *size <= 0) {
+        return;
+    }
+
+    const auto count = (uint32_t)*size;
+    const auto limit = std::min<size_t>(count, (*items)->get_size());
+
+    for (size_t i = 0; i < limit; ++i) {
+        auto controller = (REManagedObject*)(*items)->get_element((int32_t)i);
+
+        if (controller == nullptr) {
+            continue;
+        }
+
+        // Apollo's missing portrait/evidence layers are the GS4 engine-B controllers
+        // that route through an exclusive-texture RTT path in VR. Disabling RTT for
+        // those controllers keeps the scene plane stable while restoring the sprites.
+        if (engine_type_field->get_data<int32_t>(controller) != 1) {
+            continue;
+        }
+
+        if (!using_exclusive_texture_field->get_data<bool>(controller)) {
+            continue;
+        }
+
+        if (!use_rtt_field->get_data<bool>(controller)) {
+            continue;
+        }
+
+        set_use_rtt_method->call<void>(context, controller, false);
+    }
+}
+
+static void restore_pending_gui_elements() {
+    if (g_elements_to_reset.empty() && g_apollo_nitro_roots_to_reset.empty()) {
+        inside_gui_draw = false;
+        return;
+    }
+
+    auto context = sdk::get_thread_context();
+
+    for (auto& data : g_elements_to_reset) {
+        if (data == nullptr || data->view == nullptr) {
+            continue;
+        }
+
+        sdk::call_object_func<void*>(data->view, "set_ViewType", context, data->view, (uint32_t)data->view_type);
+        sdk::call_object_func<void*>(data->view, "set_Overlay", context, data->view, data->overlay);
+        sdk::call_object_func<void*>(data->view, "set_Detonemap", context, data->view, data->detonemap);
+
+        auto game_object = utility::re_component::get_game_object(data->element);
+        auto game_object_transform = utility::re_game_object::get_transform(game_object);
+
+        if (game_object_transform != nullptr) {
+            game_object_transform->worldTransform = data->original_world_matrix;
+
+            static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+            if (is_apollo_justice) {
+                sdk::set_transform_position(game_object_transform, data->original_position, true);
+            }
+        }
+
+    }
+
+    for (auto& data : g_apollo_nitro_roots_to_reset) {
+        if (data.transform == nullptr) {
+            continue;
+        }
+
+        data.transform->position = data.original_raw_position;
+        data.transform->angles = data.original_raw_angles;
+        data.transform->scale = data.original_raw_scale;
+        data.transform->worldTransform = data.original_world_matrix;
+    }
+
+    g_apollo_nitro_roots_to_reset.clear();
+    g_apollo_nitro_roots_applied = false;
+    g_elements_to_reset.clear();
+    inside_gui_draw = false;
+}
 
 bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) {
     inside_gui_draw = true;
@@ -2372,7 +2597,6 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
     }
 
     auto game_object = utility::re_component::get_game_object(gui_element);
-
     auto game_object_transform = utility::re_game_object::get_transform(game_object);
 
     if (game_object != nullptr && game_object_transform != nullptr) {
@@ -2493,6 +2717,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 restore_data->view = view;
                 restore_data->original_position = original_game_object_pos;
                 restore_data->original_world_matrix = game_object_transform->worldTransform;
+                restore_data->draw_order = (uint32_t)(g_elements_to_reset.size() - 1);
                 restore_data->overlay = sdk::call_object_func<bool>(view, "get_Overlay", context, view);
                 restore_data->detonemap = sdk::call_object_func<bool>(view, "get_Detonemap", context, view);
                 restore_data->view_type = (via::gui::ViewType)current_view_type;
@@ -2502,11 +2727,15 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                 // Set view type to world
                 sdk::call_object_func<void*>(view, "set_ViewType", context, view, (uint32_t)via::gui::ViewType::World);
 
-                // Set overlay = true (fixes double vision in VR)
-                sdk::call_object_func<void*>(view, "set_Overlay", context, view, true);
+                static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
 
-                // Set detonemap = true (fixes weird tint)
-                sdk::call_object_func<void*>(view, "set_Detonemap", context, view, true);
+                if (!is_apollo_justice) {
+                    // Set overlay = true (fixes double vision in VR)
+                    sdk::call_object_func<void*>(view, "set_Overlay", context, view, true);
+
+                    // Set detonemap = true (fixes weird tint)
+                    sdk::call_object_func<void*>(view, "set_Detonemap", context, view, true);
+                }
 
                 // Go through the children until we hit a blur filter
                 // And then remove it
@@ -2568,6 +2797,7 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                             
                             auto fix_transform_object = [&](::REManagedObject* object) {
                                 static auto transform_object_type = sdk::find_type_definition("via.gui.TransformObject");
+                                static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
 
                                 if (object == nullptr) {
                                     return;
@@ -2576,6 +2806,10 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                                 const auto t = utility::re_managed_object::get_type_definition(object);
 
                                 if (t == nullptr || !t->is_a(transform_object_type)) {
+                                    return;
+                                }
+
+                                if (is_apollo_justice) {
                                     return;
                                 }
 
@@ -2872,6 +3106,16 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
                             fix_2d_position(target_pos);
                         }
 #endif
+
+                        static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+                        if (is_apollo_justice) {
+                            apply_apollo_nitro_root_sync(gui_matrix);
+                            const auto layer_bias = std::min<float>(restore_data->draw_order * 0.0005f, 0.05f);
+                            const auto forward = glm::normalize(Vector3f{ gui_matrix[2].x, gui_matrix[2].y, gui_matrix[2].z });
+                            gui_matrix[3] -= Vector4f{ forward.x, forward.y, forward.z, 0.0f } * layer_bias;
+                            gui_matrix[3].w = 1.0f;
+                            sdk::set_transform_position(game_object_transform, gui_matrix[3], true);
+                        }
                     }
                 }
             }
@@ -2885,27 +3129,13 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
 void VR::on_gui_draw_element(REComponent* gui_element, void* primitive_context) {
     //spdlog::info("VR: on_gui_draw_element");
+    static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
 
-    auto context = sdk::get_thread_context();
-
-    // Restore elements back to original states
-    for (auto& data : g_elements_to_reset) {
-        sdk::call_object_func<void*>(data->view, "set_ViewType", context, data->view, (uint32_t)via::gui::ViewType::Screen);
-        sdk::call_object_func<void*>(data->view, "set_Overlay", context, data->view, data->overlay);
-        sdk::call_object_func<void*>(data->view, "set_Detonemap", context, data->view, data->detonemap);
-        
-        auto game_object = utility::re_component::get_game_object(data->element);
-
-        auto game_object_transform = utility::re_game_object::get_transform(game_object);
-
-        if (game_object_transform != nullptr) {
-            //sdk::set_transform_position(game_object_transform, data->original_position);
-            game_object_transform->worldTransform = data->original_world_matrix;
-        }
+    if (is_apollo_justice) {
+        return;
     }
 
-    g_elements_to_reset.clear();
-    inside_gui_draw = false;
+    restore_pending_gui_elements();
 }
 
 void VR::on_pre_update_before_lock_scene(void* ctx) {
@@ -2968,6 +3198,19 @@ void VR::on_pre_begin_rendering(void* entry) {
 
     if (!runtime->loaded) {
         return;
+    }
+
+    static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+
+    if (is_apollo_justice) {
+        apply_apollo_cell_animation_rtt_workaround();
+    }
+
+    // Apollo's GS4 GUI can render additional portrait/evidence layers after the
+    // first GUI draw callback, so we restore at EndRendering. If a previous
+    // frame exits early, clean up any leftover GUI state before the next frame.
+    if (is_apollo_justice && !g_elements_to_reset.empty()) {
+        restore_pending_gui_elements();
     }
 
     m_in_render = true;
@@ -3088,13 +3331,21 @@ void VR::on_end_rendering(void* entry) {
     m_render_frame_count = m_frame_count;
 
     auto runtime = get_runtime();
+    static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+    const auto restore_apollo_gui = [&]() {
+        if (is_apollo_justice) {
+            restore_pending_gui_elements();
+        }
+    };
 
     if (!runtime->loaded) {
+        restore_apollo_gui();
         return;
     }
 
     // TODO: Check later if this is even necessary
     if ((!runtime->ready()) && !inside_on_end) {
+        restore_apollo_gui();
         restore_camera();
 
         inside_on_end = false;
@@ -3108,6 +3359,7 @@ void VR::on_end_rendering(void* entry) {
             m_in_render = false;
         }
 
+        restore_apollo_gui();
         return;
     }
 
@@ -3216,6 +3468,8 @@ void VR::on_end_rendering(void* entry) {
         m_in_render = false;
         inside_on_end = false;
     }
+
+    restore_apollo_gui();
 }
 
 void VR::on_pre_wait_rendering(void* entry) {

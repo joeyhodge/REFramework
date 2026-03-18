@@ -33,6 +33,10 @@ RETransform* get_transform(REGameObject* obj) {
         return nullptr;
     }
 
+    if (obj->transform != nullptr) {
+        return obj->transform;
+    }
+
     static const auto game_object_t = sdk::find_type_definition("via.GameObject");
     static const auto get_transform_fn = game_object_t != nullptr ? game_object_t->get_method("get_Transform") : nullptr;
     static const auto transform_field = game_object_t != nullptr ? game_object_t->get_field("Transform") : nullptr;
@@ -56,6 +60,6 @@ RETransform* get_transform(REGameObject* obj) {
         }
     }
 
-    return obj->transform;
+    return nullptr;
 }
 }
