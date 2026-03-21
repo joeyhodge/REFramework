@@ -3,24 +3,20 @@
 #include "ReClass.hpp"
 
 namespace utility::re_component {
+    namespace detail {
+        ::REGameObject* get_game_object_via_property(::REComponent* comp);
+    }
+
     static auto get_game_object(::REComponent* comp) {
         if (comp == nullptr) {
             return (::REGameObject*)nullptr;
         }
 
-        if (comp->ownerGameObject != nullptr) {
-            return comp->ownerGameObject;
+        if (auto game_object = detail::get_game_object_via_property(comp); game_object != nullptr) {
+            return game_object;
         }
 
-        if (auto reflected = utility::re_managed_object::get_field<::REGameObject*>(comp, "GameObject"); reflected != nullptr) {
-            return reflected;
-        }
-
-        if (auto reflected = utility::re_managed_object::get_field<::REGameObject*>(comp, "OwnerGameObject"); reflected != nullptr) {
-            return reflected;
-        }
-
-        return utility::re_managed_object::get_field<::REGameObject*>(comp, "_OwnerGameObject_k__BackingField");
+        return comp->ownerGameObject;
     }
 
     static auto get_valid(::REComponent* comp) {

@@ -1,6 +1,24 @@
 #include "RETypeDB.hpp"
 
+#include "REComponent.hpp"
 #include "REGameObject.hpp"
+
+namespace utility::re_component::detail {
+::REGameObject* get_game_object_via_property(::REComponent* comp) {
+    if (comp == nullptr) {
+        return nullptr;
+    }
+
+    static const auto component_t = sdk::find_type_definition("via.Component");
+    static const auto get_game_object_method = component_t != nullptr ? component_t->get_method("get_GameObject") : nullptr;
+
+    if (get_game_object_method == nullptr) {
+        return nullptr;
+    }
+
+    return get_game_object_method->call<::REGameObject*>(sdk::get_thread_context(), comp);
+}
+}
 
 namespace utility::re_game_object {
 std::string get_name(REGameObject* obj) {
@@ -33,14 +51,8 @@ RETransform* get_transform(REGameObject* obj) {
         return nullptr;
     }
 
-    if (obj->transform != nullptr) {
-        return obj->transform;
-    }
-
     static const auto game_object_t = sdk::find_type_definition("via.GameObject");
     static const auto get_transform_fn = game_object_t != nullptr ? game_object_t->get_method("get_Transform") : nullptr;
-    static const auto transform_field = game_object_t != nullptr ? game_object_t->get_field("Transform") : nullptr;
-    static const auto transform_field_lower = game_object_t != nullptr ? game_object_t->get_field("transform") : nullptr;
 
     if (get_transform_fn != nullptr) {
         if (auto transform = get_transform_fn->call<::RETransform*>(sdk::get_thread_context(), obj); transform != nullptr) {
@@ -48,18 +60,6 @@ RETransform* get_transform(REGameObject* obj) {
         }
     }
 
-    if (transform_field != nullptr) {
-        if (auto transform = transform_field->get_data<::RETransform*>(obj); transform != nullptr) {
-            return transform;
-        }
-    }
-
-    if (transform_field_lower != nullptr) {
-        if (auto transform = transform_field_lower->get_data<::RETransform*>(obj); transform != nullptr) {
-            return transform;
-        }
-    }
-
-    return nullptr;
+    return obj->transform;
 }
 }
