@@ -79,6 +79,82 @@ std::unique_ptr<FunctionHook> g_wwise_listener_update_hook{};
 std::optional<regenny::via::Size> g_previous_size{};
 #endif
 
+bool is_apollo_justice_exe() {
+    static const bool value = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
+    return value;
+}
+
+enum class ApolloEpisodeFamily {
+    Unknown,
+    GS4,
+    GS5,
+    GS6,
+};
+
+ApolloEpisodeFamily get_apollo_visible_episode_family() {
+    if (!is_apollo_justice_exe() || !g_framework->is_ready()) {
+        return ApolloEpisodeFamily::Unknown;
+    }
+
+    const auto gui_manager = sdk::get_managed_singleton<REManagedObject>("app.GUIManager");
+
+    if (gui_manager == nullptr) {
+        return ApolloEpisodeFamily::Unknown;
+    }
+
+    const auto all_gui = sdk::get_object_field<sdk::SystemArray*>(gui_manager, "_AllGUI");
+
+    if (all_gui == nullptr || *all_gui == nullptr) {
+        return ApolloEpisodeFamily::Unknown;
+    }
+
+    int gs4_visible{};
+    int gs5_visible{};
+    int gs6_visible{};
+
+    for (size_t i = 0; i < (*all_gui)->get_size(); ++i) {
+        const auto gui = (REManagedObject*)(*all_gui)->get_element((int32_t)i);
+
+        if (gui == nullptr || !sdk::call_object_func_easy<bool>(gui, "get_IsVisible")) {
+            continue;
+        }
+
+        const auto type_definition = utility::re_managed_object::get_type_definition(gui);
+
+        if (type_definition == nullptr) {
+            continue;
+        }
+
+        const auto full_name = type_definition->get_full_name();
+
+        if (full_name.rfind("app.gs4.", 0) == 0) {
+            ++gs4_visible;
+        } else if (full_name.rfind("app.gs5.", 0) == 0) {
+            ++gs5_visible;
+        } else if (full_name.rfind("app.gs6.", 0) == 0) {
+            if (full_name == "app.gs6.uThumbnailGUI") {
+                continue;
+            }
+
+            ++gs6_visible;
+        }
+    }
+
+    if (gs4_visible >= gs5_visible && gs4_visible >= gs6_visible && gs4_visible > 0) {
+        return ApolloEpisodeFamily::GS4;
+    }
+
+    if (gs5_visible >= gs6_visible && gs5_visible > 0) {
+        return ApolloEpisodeFamily::GS5;
+    }
+
+    if (gs6_visible > 0) {
+        return ApolloEpisodeFamily::GS6;
+    }
+
+    return ApolloEpisodeFamily::Unknown;
+}
+
 // Purpose: spoof the render target size to the size of the HMD displays
 void VR::on_view_get_size(REManagedObject* scene_view, float* result) {
     // There are some very dumb optimizations that cause set_DisplayType
@@ -2386,6 +2462,7 @@ struct GUIRestoreData {
 thread_local std::vector<std::unique_ptr<GUIRestoreData>> g_elements_to_reset{};
 thread_local std::vector<GUIRestoreData::ApolloNitroRootRestore> g_apollo_nitro_roots_to_reset{};
 thread_local bool g_apollo_nitro_roots_applied{};
+thread_local bool g_apollo_thumbnail_rebound_this_frame{};
 
 static void apply_apollo_nitro_root_sync(const Matrix4x4f& gui_matrix) {
     if (g_apollo_nitro_roots_applied) {
@@ -2541,6 +2618,94 @@ static void apply_apollo_cell_animation_rtt_workaround() {
     }
 }
 
+static void apply_apollo_thumbnail_texture_workaround() {
+    static auto thumbnail_manager_t = sdk::find_type_definition("app.ThumbnailTextureManager");
+    static auto thumbnail_gui_t = sdk::find_type_definition("app.gs6.uThumbnailGUI");
+
+    static auto manager_thumbnail_gui_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("mpThumbnailGUI") : nullptr;
+    static auto evidence_gs4_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("_EvidenceTextureListGS4") : nullptr;
+    static auto evidence_gs5_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("_EvidenceTextureListGS5") : nullptr;
+    static auto evidence_gs6_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("_EvidenceTextureListGS6") : nullptr;
+    static auto profile_gs4_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("_ProfileTextureListGS4") : nullptr;
+    static auto profile_gs5_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("_ProfileTextureListGS5") : nullptr;
+    static auto profile_gs6_field = thumbnail_manager_t != nullptr ? thumbnail_manager_t->get_field("_ProfileTextureListGS6") : nullptr;
+
+    static auto thumbnail_texture_field = thumbnail_gui_t != nullptr ? thumbnail_gui_t->get_field("_TextureImage") : nullptr;
+    static auto thumbnail_type_field = thumbnail_gui_t != nullptr ? thumbnail_gui_t->get_field("mType") : nullptr;
+    static auto thumbnail_item_id_field = thumbnail_gui_t != nullptr ? thumbnail_gui_t->get_field("mItemID") : nullptr;
+
+    if (manager_thumbnail_gui_field == nullptr || evidence_gs4_field == nullptr || evidence_gs5_field == nullptr || evidence_gs6_field == nullptr ||
+        profile_gs4_field == nullptr || profile_gs5_field == nullptr || profile_gs6_field == nullptr || thumbnail_texture_field == nullptr ||
+        thumbnail_type_field == nullptr || thumbnail_item_id_field == nullptr) {
+        return;
+    }
+
+    const auto thumbnail_manager = sdk::get_managed_singleton<REManagedObject>("app.ThumbnailTextureManager");
+
+    if (thumbnail_manager == nullptr) {
+        return;
+    }
+
+    const auto thumbnail_gui = manager_thumbnail_gui_field->get_data<REManagedObject*>(thumbnail_manager);
+
+    if (thumbnail_gui == nullptr || !sdk::call_object_func_easy<bool>(thumbnail_gui, "get_IsVisible")) {
+        return;
+    }
+
+    const auto thumbnail_texture = thumbnail_texture_field->get_data<REManagedObject*>(thumbnail_gui);
+
+    if (thumbnail_texture == nullptr) {
+        return;
+    }
+
+    const auto episode_family = get_apollo_visible_episode_family();
+
+    if (episode_family == ApolloEpisodeFamily::Unknown) {
+        return;
+    }
+
+    const auto thumbnail_type = thumbnail_type_field->get_data<int32_t>(thumbnail_gui);
+    const auto thumbnail_item_id = thumbnail_item_id_field->get_data<uint32_t>(thumbnail_gui);
+    const auto texture_list_field = [&]() -> sdk::REField* {
+        const auto is_evidence_thumbnail = thumbnail_type == 0;
+
+        switch (episode_family) {
+        case ApolloEpisodeFamily::GS4:
+            return is_evidence_thumbnail ? evidence_gs4_field : profile_gs4_field;
+        case ApolloEpisodeFamily::GS5:
+            return is_evidence_thumbnail ? evidence_gs5_field : profile_gs5_field;
+        case ApolloEpisodeFamily::GS6:
+            return is_evidence_thumbnail ? evidence_gs6_field : profile_gs6_field;
+        default:
+            return nullptr;
+        }
+    }();
+
+    if (texture_list_field == nullptr) {
+        return;
+    }
+
+    const auto texture_list = texture_list_field->get_data<sdk::SystemArray*>(thumbnail_manager);
+
+    if (texture_list == nullptr || thumbnail_item_id >= texture_list->get_size()) {
+        return;
+    }
+
+    const auto target_texture_holder = (REManagedObject*)texture_list->get_element((int32_t)thumbnail_item_id);
+
+    if (target_texture_holder == nullptr) {
+        return;
+    }
+
+    const auto current_texture_holder = sdk::call_object_func_easy<REManagedObject*>(thumbnail_texture, "getTexture");
+
+    if (current_texture_holder == target_texture_holder) {
+        return;
+    }
+
+    sdk::call_object_func<void*>(thumbnail_texture, "setTexture", sdk::get_thread_context(), thumbnail_texture, target_texture_holder);
+}
+
 static void restore_pending_gui_elements() {
     if (g_elements_to_reset.empty() && g_apollo_nitro_roots_to_reset.empty()) {
         inside_gui_draw = false;
@@ -2601,6 +2766,11 @@ bool VR::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_conte
 
     if (game_object != nullptr && game_object_transform != nullptr) {
         auto context = sdk::get_thread_context();
+
+        if (is_apollo_justice_exe() && !g_apollo_thumbnail_rebound_this_frame) {
+            apply_apollo_thumbnail_texture_workaround();
+            g_apollo_thumbnail_rebound_this_frame = true;
+        }
 
         const auto name = utility::re_game_object::get_name(game_object);
         const auto name_hash = utility::hash(name);
@@ -3203,7 +3373,9 @@ void VR::on_pre_begin_rendering(void* entry) {
     static const auto is_apollo_justice = utility::get_module_path(utility::get_executable())->find("GS456.exe") != std::string::npos;
 
     if (is_apollo_justice) {
+        g_apollo_thumbnail_rebound_this_frame = false;
         apply_apollo_cell_animation_rtt_workaround();
+        apply_apollo_thumbnail_texture_workaround();
     }
 
     // Apollo's GS4 GUI can render additional portrait/evidence layers after the
