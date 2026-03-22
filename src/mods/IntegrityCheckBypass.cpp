@@ -1874,78 +1874,84 @@ void IntegrityCheckBypass::immediate_patch_re9() {
         }*/
 
         static std::vector<SafetyHookMid> callsites{};
+        const auto candidate_pats = std::vector<std::string>{
+            "? 8b ? 08 ? 8b ? 10 ? 8b ? 18 48 85 c9 0f 84 ? ? ? ? ff d0", // observed in RE9 PC, MHSTORIES 3
+            "? 8b ? 08 ? 8b ? 10 ? 8b ? 18 48 85 c9 74 ? ff d0", // Rare path sometimes taken. seen in both.
+        };
 
-        for (auto ref = utility::scan(utility::get_executable(), "? 8b ? 08 ? 8b ? 10 ? 8b ? 18 48 85 c9 0f 84 ? ? ? ? ff d0"); 
-            ref; 
-            ref = utility::scan((*ref + 1), game_end - (*ref + 1), "? 8b ? 08 ? 8b ? 10 ? 8b ? 18 48 85 c9 0f 84 ? ? ? ? ff d0")) 
-        {
-            const auto dec = utility::decode_one((uint8_t*)(*ref));
-            int reg = NDR_RDX; // default to rdx, which is the most common register used for the job descriptor pointer in observed patterns
-            if (dec && dec->OperandsCount >= 2 && dec->Operands[1].Type == ND_OP_MEM) {
-                // determine register being used in right hand side (mem)
-                reg = dec->Operands[1].Info.Memory.Base;
-                spdlog::info("[IntegrityCheckBypass]: Found candidate call site for job submission with integrity check in RE9 @ 0x{:X}, using register {} for descriptor", *ref, reg);
-            } else {
-                spdlog::warn("[IntegrityCheckBypass]: Found candidate call site for job submission with integrity check in RE9 @ 0x{:X}, but failed to decode register used for descriptor, defaulting to rdx", *ref);
-            }
-
-            switch (reg)
+        for (const auto& pat : candidate_pats) {
+            for (auto ref = utility::scan(utility::get_executable(), pat); 
+                ref; 
+                ref = utility::scan((*ref + 1), game_end - (*ref + 1), pat)) 
             {
-            case NDR_RAX:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RAX>));
-                break;
-            case NDR_RCX:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RCX>));
-                break;
-            case NDR_RDX:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RDX>));
-                break;
-            case NDR_RBX:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RBX>));
-                break;
-            case NDR_RSP:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RSP>));
-                break;
-            case NDR_RBP:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RBP>));
-                break;
-            case NDR_RSI:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RSI>));
-                break;
-            case NDR_RDI:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RDI>));
-                break;
-            case NDR_R8:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R8>));
-                break;
-            case NDR_R9:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R9>));
-                break;
-            case NDR_R10:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R10>));
-                break;
-            case NDR_R11:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R11>));
-                break;
-            case NDR_R12:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R12>));
-                break;
-            case NDR_R13:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R13>));
-                break;
-            case NDR_R14:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R14>));
-                break;
-            case NDR_R15:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R15>));
-                break;
-            default:
-                callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RDX>));
-                break;
-            };
+                const auto dec = utility::decode_one((uint8_t*)(*ref));
+                int reg = NDR_RDX; // default to rdx, which is the most common register used for the job descriptor pointer in observed patterns
+                if (dec && dec->OperandsCount >= 2 && dec->Operands[1].Type == ND_OP_MEM) {
+                    // determine register being used in right hand side (mem)
+                    reg = dec->Operands[1].Info.Memory.Base;
+                    spdlog::info("[IntegrityCheckBypass]: Found candidate call site for job submission with integrity check in RE9 @ 0x{:X}, using register {} for descriptor", *ref, reg);
+                } else {
+                    spdlog::warn("[IntegrityCheckBypass]: Found candidate call site for job submission with integrity check in RE9 @ 0x{:X}, but failed to decode register used for descriptor, defaulting to rdx", *ref);
+                }
 
-            //callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), validate_job_func
-            spdlog::info("[IntegrityCheckBypass]: Hooked call site at 0x{:X}", *ref);
+                switch (reg)
+                {
+                case NDR_RAX:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RAX>));
+                    break;
+                case NDR_RCX:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RCX>));
+                    break;
+                case NDR_RDX:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RDX>));
+                    break;
+                case NDR_RBX:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RBX>));
+                    break;
+                case NDR_RSP:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RSP>));
+                    break;
+                case NDR_RBP:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RBP>));
+                    break;
+                case NDR_RSI:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RSI>));
+                    break;
+                case NDR_RDI:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RDI>));
+                    break;
+                case NDR_R8:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R8>));
+                    break;
+                case NDR_R9:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R9>));
+                    break;
+                case NDR_R10:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R10>));
+                    break;
+                case NDR_R11:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R11>));
+                    break;
+                case NDR_R12:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R12>));
+                    break;
+                case NDR_R13:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R13>));
+                    break;
+                case NDR_R14:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R14>));
+                    break;
+                case NDR_R15:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_R15>));
+                    break;
+                default:
+                    callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), &validate_job_func<NDR_RDX>));
+                    break;
+                };
+
+                //callsites.emplace_back(safetyhook::create_mid((void*)(*ref + 4), validate_job_func
+                spdlog::info("[IntegrityCheckBypass]: Hooked call site at 0x{:X}", *ref);
+            }
         }
     }
 
