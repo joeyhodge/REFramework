@@ -257,6 +257,8 @@ std::optional<std::string> IntegrityCheckBypass::on_initialize() {
 }
 
 void IntegrityCheckBypass::on_frame() {
+    re9_heartbeat_bypass();
+
 #ifdef RE3
     if (m_bypass_integrity_checks != nullptr) {
         *m_bypass_integrity_checks = true;
@@ -1649,6 +1651,7 @@ void IntegrityCheckBypass::immediate_patch_re9() {
     // Invariant that works through obfuscation. They don't obfuscate the epilogue of the block above the slow path conditional.
     // The xor rcx,rsp + call __security_check_cookie + vmovaps xmm6 sequence is compiler-generated and stable.
     // In new builds there was a sub rbp, rbp randomly inserted after the vmovaps, so we added a wildcard functionality to the signature scan to allow some instructions in between.
+    
     const auto function_epilogue_sig = "48 31 E1 E8 ? ? ? ? *[5] C5 F8 28 B4 24 D0 01 00 00 *[5] 48 81 C4 E8 01 00 00";
     std::optional<uintptr_t> result{};
     size_t nop_size{};
@@ -1750,6 +1753,7 @@ void IntegrityCheckBypass::immediate_patch_re9() {
     // epilogue signature above doesn't match). The UD2 writer instruction 'mov [rax+rcx+8], rdx'
     // (48 89 ? 08 08) is unique or near-unique in the anti-tamper section. Searching backwards from it
     // for the SETcc + dispatch table load pattern finds the discriminator reliably.
+#if 0
     if (!result) {
         spdlog::info("[IntegrityCheckBypass]: Epilogue scan failed, trying UD2 writer anchor approach...");
 
@@ -1833,6 +1837,7 @@ void IntegrityCheckBypass::immediate_patch_re9() {
             }
         }
     }
+#endif
 
     if (result) {
         spdlog::info("[IntegrityCheckBypass]: Found slow path discriminator @ 0x{:X} ({}B), patching...", *result, nop_size);
@@ -1845,7 +1850,7 @@ void IntegrityCheckBypass::immediate_patch_re9() {
         nops.resize(nop_size, 0x90);
         static auto patch = Patch::create(*result, nops, true);
         spdlog::info("[IntegrityCheckBypass]: Patched slow path discriminator!");
-    } 
+    }
     
     // Hook this anyways as a backup plan.
     {
@@ -2106,6 +2111,102 @@ void IntegrityCheckBypass::immediate_patch_re9() {
     if (!patched_pe_header_check) {
         spdlog::error("[IntegrityCheckBypass]: Could not find PE header integrity check!");
     }
+}
+
+void IntegrityCheckBypass::re9_heartbeat_bypass() {
+    // let me explain what's happening here.
+    // because the obfuscation has been randomized around the areas we've been patching so far (immediate_patch_re9, see commented out code)
+    // I had become a bit fed up with manually fixing broken anti-tamper bypasses every update.
+    // So I wrote an emulator that executed the RenderTaskEnd path (which contains anti-tamper code, especially the penalty code)
+    // During my analysis of the trace, I found the conditional that decided between the penalty or the clean path.
+    // So instead of patching that, I wanted to figure out WHAT caused that conditional to evaluate to "tampered" in the first place.
+    // I found that, inside of a bunch of horrible obfuscated code, it was evaluating some value inside the renderer.
+    // In this case it almost looked like the frame count.
+    // I analyzed the memory region near this frame count and noticed 6 other values very close in value to the frame count, and they were all being updated
+    // every 500ms or so to the actual frame count.
+    // I noticed that when any of these frame counts were set to 0, the penalty path triggered and the game lagged to hell or crashed.
+    // I then noticed that making these values equal to the frame count always made the clean path trigger, even if the integrity checks were triggered.
+    // No patching necessary!
+#if TDB_VER >= 82
+    static auto renderer_t = sdk::find_type_definition("via.render.Renderer");
+    static auto get_RenderFrame = renderer_t != nullptr ? renderer_t->get_method("get_RenderFrame") : nullptr;
+    auto renderer = sdk::get_native_singleton("via.render.Renderer");
+
+    if (renderer != nullptr && renderer_t != nullptr && get_RenderFrame != nullptr) {
+        static uint32_t* heartbeat_offset_start{nullptr};
+        static std::vector<uintptr_t> candidates{};
+        static uint32_t last_scan_frame = 0;
+        static int confirmation_count = 0;
+        static constexpr int CONFIRMATIONS_NEEDED = 5;
+        static constexpr int32_t MAX_DISTANCE = 1000;
+        static constexpr size_t HEARTBEAT_COUNT = 6;
+
+        const auto frame_count = get_RenderFrame->call<uint32_t>(); // static func
+        const auto renderer_addr = (uintptr_t)renderer;
+
+        if (heartbeat_offset_start != nullptr) {
+            // Confirmed, sync heartbeats to frame counter every frame
+            for (size_t i = 0; i < HEARTBEAT_COUNT; i++) {
+                heartbeat_offset_start[i] = frame_count;
+            }
+        } else if (frame_count > 100 && frame_count != last_scan_frame) {
+            last_scan_frame = frame_count;
+
+            // Scan renderer struct for runs of 6 consecutive DWORDs all within
+            // MAX_DISTANCE of frame_count (and <= frame_count).
+            std::vector<uintptr_t> this_frame{};
+            for (size_t i = 0x2000; i + HEARTBEAT_COUNT * 4 <= 0x4000; i += sizeof(uint32_t)) {
+                try {
+                    auto* ints = reinterpret_cast<uint32_t*>(renderer_addr + i);
+                    if (ints[-1] != 1) {
+                        continue; // the DWORD immediately preceding the 6 we care about should be 1, it's used as a sentinel for the start of the heartbeat cluster.
+                    }
+                    if (ints[HEARTBEAT_COUNT] != 0) {
+                        continue; // the DWORD immediately following the 6 we care about should be 0, it's used as a sentinel for the end of the heartbeat cluster.
+                    }
+                    bool ok = true;
+                    for (size_t j = 0; j < HEARTBEAT_COUNT; j++) {
+                        auto val = ints[j];
+                        if (val < 100 || val > frame_count || (frame_count - val) >= MAX_DISTANCE) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok) {
+                        this_frame.push_back(renderer_addr + i);
+                    }
+                } catch (...) {}
+            }
+
+            if (candidates.empty()) {
+                // First scan, seed candidates
+                candidates = std::move(this_frame);
+                confirmation_count = 1;
+            } else {
+                // Intersect with previous candidates, only keep offsets
+                // that match across multiple frames
+                std::vector<uintptr_t> intersection{};
+                for (auto addr : candidates) {
+                    if (std::find(this_frame.begin(), this_frame.end(), addr) != this_frame.end()) {
+                        intersection.push_back(addr);
+                    }
+                }
+                candidates = std::move(intersection);
+                confirmation_count++;
+
+                if (candidates.size() == 1 && confirmation_count >= CONFIRMATIONS_NEEDED) {
+                    heartbeat_offset_start = (uint32_t*)candidates[0];
+                    spdlog::info("[IntegrityCheckBypass] Found heartbeat cluster at renderer+0x{:X} after {} confirmations at frame count {}, syncing it to frame count every frame now",
+                        (uintptr_t)heartbeat_offset_start - renderer_addr, confirmation_count, frame_count);
+                } else if (candidates.empty()) {
+                    // Lost all candidates, restart
+                    confirmation_count = 0;
+                    spdlog::warn("[IntegrityCheckBypass] Heartbeat candidates lost, restarting scan");
+                }
+            }
+        }
+    }
+#endif
 }
 
 void IntegrityCheckBypass::remove_stack_destroyer() {
