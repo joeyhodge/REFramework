@@ -492,13 +492,10 @@ void FaultyFileDetector::try_add_to_faulty_list(std::wstring_view filename, Faul
         // Push a toast notification
         {
             std::scoped_lock lock2{m_mutex};
-            if (m_notifications.size() < MAX_VISIBLE_NOTIFICATIONS) {
-                Notification notif{};
-                notif.text = std::format("[{}] {}", faulty_reason_to_string(reason), utility::narrow(name_wstr));
-                notif.reason = reason;
-                notif.spawn_time = std::chrono::steady_clock::now();
-                m_notifications.push_back(std::move(notif));
-            }
+            Notification notif{};
+            notif.text = std::format("[{}] {}", faulty_reason_to_string(reason), utility::narrow(name_wstr));
+            notif.reason = reason;
+            m_notifications.push_back(std::move(notif));
         }
         // Log the faulty file to dedicated log file
         auto log_msg = std::format("{} \"{}\" \"{}\"", (int)reason, faulty_reason_to_string(reason), utility::narrow(name_wstr));
@@ -530,13 +527,12 @@ void FaultyFileDetector::on_frame() {
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const auto& io = ImGui::GetIO();
+    const float dt = std::min(ImGui::GetIO().DeltaTime, 0.1f);
 
     // Remove expired notifications from the front
     while (!m_notifications.empty()) {
-        auto elapsed = std::chrono::duration<float>(now - m_notifications.front().spawn_time).count();
-        if (elapsed > NOTIFICATION_DURATION + NOTIFICATION_FADE_OUT) {
+        auto& front = m_notifications.front();
+        if (front.started && front.elapsed > NOTIFICATION_DURATION + NOTIFICATION_FADE_OUT) {
             m_notifications.pop_front();
         } else {
             break;
@@ -546,7 +542,12 @@ void FaultyFileDetector::on_frame() {
     float y_offset = 10.0f;
 
     for (auto& notif : m_notifications) {
-        float elapsed = std::chrono::duration<float>(now - notif.spawn_time).count();
+        // Mark as started on first frame so pre-rendering queued notifications
+        // don't accumulate wall-clock time before ImGui is ready.
+        notif.started = true;
+        notif.elapsed += dt;
+
+        float elapsed = notif.elapsed;
 
         // Compute alpha: fade in, hold, fade out
         float alpha = 1.0f;

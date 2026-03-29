@@ -4,7 +4,6 @@
 #include "sdk/ResourceManager.hpp"
 
 #include <safetyhook.hpp>
-#include <chrono>
 #include <deque>
 #include <map>
 #include <regex>
@@ -86,8 +85,8 @@ private:
     struct Notification {
         std::string text;
         FaultyReason reason;
-        std::chrono::steady_clock::time_point spawn_time;
-        float current_alpha{0.0f};
+        float elapsed{0.0f};
+        bool started{false}; // false until first on_frame processes it
     };
 
     std::deque<Notification> m_notifications{};
@@ -97,8 +96,6 @@ private:
     static constexpr float NOTIFICATION_HEIGHT = 30.0f;
     static constexpr float NOTIFICATION_PADDING = 8.0f;
     static constexpr float NOTIFICATION_MARGIN = 4.0f;
-    static constexpr size_t MAX_VISIBLE_NOTIFICATIONS = 10;
-
     ModToggle::Ptr m_enabled{ ModToggle::create(generate_name("Enabled"), true) };
     ModInt32::Ptr m_max_recent_files{ ModInt32::create(generate_name("MaxRecentFiles"), 100) };
 
