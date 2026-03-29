@@ -489,6 +489,17 @@ void FaultyFileDetector::try_add_to_faulty_list(std::wstring_view filename, Faul
     }
 
     if (should_log) {
+        // Push a toast notification
+        {
+            std::scoped_lock lock2{m_mutex};
+            if (m_notifications.size() < MAX_VISIBLE_NOTIFICATIONS) {
+                Notification notif{};
+                notif.text = std::format("[{}] {}", faulty_reason_to_string(reason), utility::narrow(name_wstr));
+                notif.reason = reason;
+                notif.spawn_time = std::chrono::steady_clock::now();
+                m_notifications.push_back(std::move(notif));
+            }
+        }
         // Log the faulty file to dedicated log file
         auto log_msg = std::format("{} \"{}\" \"{}\"", (int)reason, faulty_reason_to_string(reason), utility::narrow(name_wstr));
 
@@ -505,6 +516,83 @@ void FaultyFileDetector::try_add_to_faulty_list(std::wstring_view filename, Faul
                     break;
             }
         }
+    }
+}
+
+void FaultyFileDetector::on_frame() {
+    if (!m_enabled->value()) {
+        return;
+    }
+
+    std::scoped_lock lock{m_mutex};
+
+    if (m_notifications.empty()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto& io = ImGui::GetIO();
+
+    // Remove expired notifications from the front
+    while (!m_notifications.empty()) {
+        auto elapsed = std::chrono::duration<float>(now - m_notifications.front().spawn_time).count();
+        if (elapsed > NOTIFICATION_DURATION + NOTIFICATION_FADE_OUT) {
+            m_notifications.pop_front();
+        } else {
+            break;
+        }
+    }
+
+    float y_offset = 10.0f;
+
+    for (auto& notif : m_notifications) {
+        float elapsed = std::chrono::duration<float>(now - notif.spawn_time).count();
+
+        // Compute alpha: fade in, hold, fade out
+        float alpha = 1.0f;
+        if (elapsed < NOTIFICATION_FADE_IN) {
+            alpha = elapsed / NOTIFICATION_FADE_IN;
+        } else if (elapsed > NOTIFICATION_DURATION) {
+            alpha = 1.0f - (elapsed - NOTIFICATION_DURATION) / NOTIFICATION_FADE_OUT;
+        }
+        alpha = std::clamp(alpha, 0.0f, 1.0f);
+
+        // Slide in from the left
+        float slide = (elapsed < NOTIFICATION_FADE_IN) ? (elapsed / NOTIFICATION_FADE_IN) : 1.0f;
+
+        // Pick color based on reason
+        ImVec4 text_color;
+        switch (notif.reason) {
+            case FaultyReason::MissingFile:       text_color = ImVec4(1.0f, 1.0f, 0.3f, alpha); break;
+            case FaultyReason::Invalid:           text_color = ImVec4(1.0f, 0.6f, 0.2f, alpha); break;
+            case FaultyReason::ShouldBeEncrypted: text_color = ImVec4(1.0f, 0.3f, 0.3f, alpha); break;
+            default:                              text_color = ImVec4(0.9f, 0.9f, 0.9f, alpha); break;
+        }
+
+        auto text_size = ImGui::CalcTextSize(notif.text.c_str());
+        float box_width = text_size.x + NOTIFICATION_PADDING * 2.0f;
+        float box_height = text_size.y + NOTIFICATION_PADDING * 2.0f;
+
+        float x_pos = -box_width * (1.0f - slide) + 10.0f * slide;
+
+        auto* draw_list = ImGui::GetForegroundDrawList();
+
+        // Background
+        ImU32 bg_color = IM_COL32(20, 20, 20, (int)(200 * alpha));
+        ImU32 border_color = IM_COL32(80, 80, 80, (int)(180 * alpha));
+        ImVec2 p_min{x_pos, y_offset};
+        ImVec2 p_max{x_pos + box_width, y_offset + box_height};
+        draw_list->AddRectFilled(p_min, p_max, bg_color, 4.0f);
+        draw_list->AddRect(p_min, p_max, border_color, 4.0f);
+
+        // Text
+        draw_list->AddText(
+            ImVec2{x_pos + NOTIFICATION_PADDING, y_offset + NOTIFICATION_PADDING},
+            ImGui::ColorConvertFloat4ToU32(text_color),
+            notif.text.c_str()
+        );
+
+        y_offset += box_height + NOTIFICATION_MARGIN;
     }
 }
 
