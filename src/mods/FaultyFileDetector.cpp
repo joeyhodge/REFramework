@@ -198,8 +198,9 @@ bool FaultyFileDetector::scan_resource_process_parse_and_hook() {
             const int first_call_vtable_offset = 0x20;
             const int second_call_vtable_offset = 0x48;
             const int third_call_vtable_offset = 0x38;
+            bool found[3]{false, false, false};
 
-            const int max_instructions_search_range = 60;
+            const int max_instructions_search_range = 100;
 
             int current_calls_found = 0;
 
@@ -207,36 +208,55 @@ bool FaultyFileDetector::scan_resource_process_parse_and_hook() {
             std::uint8_t *parse_call_return_address = nullptr;
             std::uint8_t *start_searching_resource_access_ptr = nullptr;
 
-            for (int i = 0; i < max_instructions_search_range; i++) {
-                auto instr = utility::decode_one(after_call_ptr);
-                if (!instr.has_value()) {
-                    break;
+            //for (int i = 0; i < max_instructions_search_range; i++) {
+                //auto instr = utility::decode_one(after_call_ptr);
+                //if (!instr.has_value()) {
+                    //break;
+                //}
+            // exhaustive_decode instead. seen to be using non contiguous control flow in some games.
+            utility::exhaustive_decode((uint8_t*)after_call_ptr, max_instructions_search_range, [&](utility::ExhaustionContext& ctx) -> utility::ExhaustionResult {
+                if (current_calls_found >= 3) {
+                    return utility::ExhaustionResult::BREAK;
                 }
+            
+                auto* instr = &ctx.instrux;
 
                 if (instr->Instruction == ND_INS_CALLNI) {
                     if (instr->OperandsCount >= 1 && instr->Operands[0].Type == ND_OP_MEM) {
                         auto mem_operand = instr->Operands[0].Info.Memory;
                         if (mem_operand.Base == NDR_RAX) {
-                            if (current_calls_found == 0 && mem_operand.Disp == first_call_vtable_offset) {
+                            if (mem_operand.Disp == first_call_vtable_offset && !found[0]) {
                                 // First call found
                                 current_calls_found++;
                                 start_searching_resource_access_ptr = after_call_ptr + instr->Length;
-                            } else if (current_calls_found == 1 && mem_operand.Disp == second_call_vtable_offset) {
+                                found[0] = true;
+                                spdlog::info("[FaultyFileDetector]: Found first call at 0x{:X}", (uintptr_t)after_call_ptr);
+                            } else if (mem_operand.Disp == second_call_vtable_offset && !found[1]) {
                                 // Second call found
                                 current_calls_found++;
                                 parse_call_ptr = after_call_ptr;
                                 parse_call_return_address = after_call_ptr + instr->Length;
-                            } else if (current_calls_found == 2 && mem_operand.Disp == third_call_vtable_offset) {
+                                found[1] = true;
+                                spdlog::info("[FaultyFileDetector]: Found second call at 0x{:X}", (uintptr_t)after_call_ptr);
+                            } else if (mem_operand.Disp == third_call_vtable_offset && !found[2]) {
                                 // Third call found
                                 current_calls_found++;
-                                break;
+                                found[2] = true;
+                                spdlog::info("[FaultyFileDetector]: Found third call at 0x{:X}", (uintptr_t)after_call_ptr);
                             }
                         }
                     }
                 }
 
                 after_call_ptr += instr->Length;
-            }
+
+                // step over calls.
+                if (instr->Category == ND_CAT_CALL) {
+                    return utility::ExhaustionResult::STEP_OVER;
+                }
+
+                return utility::ExhaustionResult::CONTINUE;
+            });
 
             if (current_calls_found == 3) {
                 // Definitively what we are looking for
@@ -249,13 +269,15 @@ bool FaultyFileDetector::scan_resource_process_parse_and_hook() {
                 std::uint8_t *resource_argument_assigned_ptr = nullptr;
 
                 // Very fragile way, but it works for now
-                for (int i = 0; i < resource_register_search_max_num_instructions && instr_ptr < parse_call_ptr; i++) {
+                for (int i = 0; i < resource_register_search_max_num_instructions; i++) {
                     auto instrux = utility::decode_one(instr_ptr);
-                    if (instrux && instrux->Instruction == ND_INS_MOV) {
+                    if (instrux && std::string_view(instrux->Mnemonic).starts_with("MOV")) {
                         bool is_first_operator_first_arg = instrux->OperandsCount >= 1 && instrux->Operands[0].Type == ND_OP_REG && instrux->Operands[0].Info.Register.Reg == NDR_RCX;
                         bool is_second_operator_register = instrux->OperandsCount >= 2 && instrux->Operands[1].Type == ND_OP_REG;
+                        // Seen in RE9
+                        bool is_second_operator_rsp_based = instrux->OperandsCount >= 2 && instrux->Operands[1].Type == ND_OP_MEM && instrux->Operands[1].Info.Memory.Base == NDR_RSP;
 
-                        if (is_first_operator_first_arg && is_second_operator_register) {
+                        if (is_first_operator_first_arg && (is_second_operator_register || is_second_operator_rsp_based)) {
                             resource_argument_assigned_ptr = instr_ptr + instrux->Length;
                             spdlog::info("[FaultyFileDetector]: Found resource argument assign at 0x{:x}, hooking to extract it at: 0x{:x}", (uintptr_t)instr_ptr, (uintptr_t)resource_argument_assigned_ptr);
 
