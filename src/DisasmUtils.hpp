@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <safetyhook/context.hpp>
-#include <bddisasm/bddisasm.h>
+#include <bddisasm.h>
 
 namespace disasm_utils {
 
@@ -48,6 +48,28 @@ void set_register_value(safetyhook::Context& context, int reg, T value) {
     case NDR_R13: context.r13 = (uint64_t)value; break;
     case NDR_R14: context.r14 = (uint64_t)value; break;
     case NDR_R15: context.r15 = (uint64_t)value; break;
+    }
+}
+
+inline const char* register_name(int reg) {
+    switch (reg) {
+    case NDR_RAX: return "RAX";
+    case NDR_RCX: return "RCX";
+    case NDR_RDX: return "RDX";
+    case NDR_RBX: return "RBX";
+    case NDR_RSP: return "RSP";
+    case NDR_RBP: return "RBP";
+    case NDR_RSI: return "RSI";
+    case NDR_RDI: return "RDI";
+    case NDR_R8:  return "R8";
+    case NDR_R9:  return "R9";
+    case NDR_R10: return "R10";
+    case NDR_R11: return "R11";
+    case NDR_R12: return "R12";
+    case NDR_R13: return "R13";
+    case NDR_R14: return "R14";
+    case NDR_R15: return "R15";
+    default: return "UNKNOWN";
     }
 }
 

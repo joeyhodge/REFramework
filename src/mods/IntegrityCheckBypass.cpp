@@ -667,116 +667,15 @@ void IntegrityCheckBypass::patch_version_hook(safetyhook::Context& context) {
     // THEY STORE PATCH VERSION INSIDE SOMEWHERE NOW! And only load until that patch version then dont load no more paks
     spdlog::info("[IntegrityCheckBypass]: patch_version_hook called!");
 
-    uint64_t current_patch_version = 0;
-    switch (s_patch_version_reg_index) {
-        case NDR_RAX: current_patch_version = context.rax; break;
-        case NDR_RCX: current_patch_version = context.rcx; break;
-        case NDR_RDX: current_patch_version = context.rdx; break;
-        case NDR_RBX: current_patch_version = context.rbx; break;
-        case NDR_RSP: current_patch_version = context.rsp; break;
-        case NDR_RBP: current_patch_version = context.rbp; break;
-        case NDR_RSI: current_patch_version = context.rsi; break;
-        case NDR_RDI: current_patch_version = context.rdi; break;
-        case NDR_R8: current_patch_version = context.r8; break;
-        case NDR_R9: current_patch_version = context.r9; break;
-        case NDR_R10: current_patch_version = context.r10; break;
-        case NDR_R11: current_patch_version = context.r11; break;
-        case NDR_R12: current_patch_version = context.r12; break;
-        case NDR_R13: current_patch_version = context.r13; break;
-        case NDR_R14: current_patch_version = context.r14; break;
-        case NDR_R15: current_patch_version = context.r15; break;
-        default: current_patch_version = context.rax; break; // fallback
-    }
+    const auto reg = s_patch_version_reg_index != -1 ? s_patch_version_reg_index : NDR_RAX; // fallback to RAX
+    uint64_t current_patch_version = disasm_utils::get_register_value(context, reg);
 
     // Scan for amount of paks. Get exe directory. To be honest set this to 9999 is okay, but i feel like it might take a long time
     int file_count_result = std::max<int>(scan_patch_files_count(), current_patch_version);
 
-    switch (s_patch_version_reg_index) {
-        case NDR_RAX:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RAX to {}", context.rax, file_count_result);
-            context.rax = file_count_result;
-            break;
-
-        case NDR_RCX:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RCX to {}", context.rcx, file_count_result);
-            context.rcx = file_count_result;
-            break;
-
-        case NDR_RDX:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RDX to {}", context.rdx, file_count_result);
-            context.rdx = file_count_result;
-            break;
-
-        case NDR_RBX:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RBX to {}", context.rbx, file_count_result);
-            context.rbx = file_count_result;
-            break;
-
-        case NDR_RSP:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RSP to {}", context.rsp, file_count_result);
-            context.rsp = file_count_result;
-            break;
-
-        case NDR_RBP:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RBP to {}", context.rbp, file_count_result);
-            context.rbp = file_count_result;
-            break;
-
-        case NDR_RSI:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RSI to {}", context.rsi, file_count_result);
-            context.rsi = file_count_result;
-            break;
-
-        case NDR_RDI:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at RDI to {}", context.rdi, file_count_result);
-            context.rdi = file_count_result;
-            break;
-
-        case NDR_R8:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R8 to {}", context.r8, file_count_result);
-            context.r8 = file_count_result;
-            break;
-
-        case NDR_R9:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R9 to {}", context.r9, file_count_result);
-            context.r9 = file_count_result;
-            break;
-
-        case NDR_R10:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R10 to {}", context.r10, file_count_result);
-            context.r10 = file_count_result;
-            break;
-
-        case NDR_R11:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R11 to {}", context.r11, file_count_result);
-            context.r11 = file_count_result;
-            break;
-
-        case NDR_R12:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R12 to {}", context.r12, file_count_result);
-            context.r12 = file_count_result;
-            break;
-
-        case NDR_R13:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R13 to {}", context.r13, file_count_result);
-            context.r13 = file_count_result;
-            break;
-
-        case NDR_R14:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R14 to {}", context.r14, file_count_result);
-            context.r14 = file_count_result;
-            break;
-
-        case NDR_R15:
-            spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at R15 to {}", context.r15, file_count_result);
-            context.r15 = file_count_result;
-            break;
-
-        default:
-            spdlog::info("[IntegrityCheckBypass]: Unknown register, falling back to RAX for patch version: {} (update it to {})", context.rax, file_count_result);
-            context.rax = file_count_result; // fallback to RAX
-            break;
-    }
+    spdlog::info("[IntegrityCheckBypass]: Patch version: {}. Game wont load past this patch version. Setting new patch version at {} to {}",
+        current_patch_version, disasm_utils::register_name(reg), file_count_result);
+    disasm_utils::set_register_value(context, reg, (uint64_t)file_count_result);
 }
 
 void IntegrityCheckBypass::pak_store_flags_hook(safetyhook::Context& context) {
@@ -832,76 +731,10 @@ void IntegrityCheckBypass::sha3_rsa_code_midhook(safetyhook::Context& context) {
         pak_flags = static_cast<PakFlags>(*s_pak_flags_value);
         spdlog::info("[IntegrityCheckBypass]: Using stored pak flags value: 0x{:X}", *s_pak_flags_value);
     } else {
-        switch (s_sha3_reg_index) {
-            case NDR_RAX:
-                pak_flags = (PakFlags)context.rax;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RAX for pak_flags");
-                break;
-            case NDR_RCX:
-                pak_flags = (PakFlags)context.rcx;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RCX for pak_flags");
-                break;
-            case NDR_RDX:
-                pak_flags = (PakFlags)context.rdx;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RDX for pak_flags");
-                break;
-            case NDR_RBX:
-                pak_flags = (PakFlags)context.rbx;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RBX for pak_flags");
-                break;
-            case NDR_RSP:
-                pak_flags = (PakFlags)context.rsp;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RSP for pak_flags");
-                break;
-            case NDR_RBP:
-                pak_flags = (PakFlags)context.rbp;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RBP for pak_flags");
-                break;
-            case NDR_RSI:
-                pak_flags = (PakFlags)context.rsi;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RSI for pak_flags");
-                break;
-            case NDR_RDI:
-                pak_flags = (PakFlags)context.rdi;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using RDI for pak_flags");
-                break;
-            case NDR_R8:
-                pak_flags = (PakFlags)context.r8;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R8 for pak_flags");
-                break;
-            case NDR_R9:
-                pak_flags = (PakFlags)context.r9;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R9 for pak_flags");
-                break;
-            case NDR_R10:
-                pak_flags = (PakFlags)context.r10;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R10 for pak_flags");
-                break;
-            case NDR_R11:
-                pak_flags = (PakFlags)context.r11;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R11 for pak_flags");
-                break;
-            case NDR_R12:
-                pak_flags = (PakFlags)context.r12;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R12 for pak_flags");
-                break;
-            case NDR_R13:
-                pak_flags = (PakFlags)context.r13;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R13 for pak_flags");
-                break;
-            case NDR_R14:
-                pak_flags = (PakFlags)context.r14;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R14 for pak_flags");
-                break;
-            case NDR_R15:
-                pak_flags = (PakFlags)context.r15;
-                SPDLOG_INFO("[IntegrityCheckBypass]: Using R15 for pak_flags");
-                break;
-            default:
-                pak_flags = (PakFlags)context.r8; // fallback to R8
-                SPDLOG_INFO("[IntegrityCheckBypass]: Unknown register, falling back to R8 for pak_flags");
-                break;
-        }
+        pak_flags = s_sha3_reg_index != -1
+            ? disasm_utils::get_register_value<PakFlags>(context, s_sha3_reg_index)
+            : (PakFlags)context.r8; // fallback to R8
+        SPDLOG_INFO("[IntegrityCheckBypass]: Using {} for pak_flags", disasm_utils::register_name(s_sha3_reg_index));
     }
 
     if ((pak_flags & PakFlags::ENCRYPTED) != 0) {
