@@ -10,6 +10,7 @@
 
 #include <safetyhook/mid_hook.hpp>
 #include "REFramework.hpp"
+#include "DisasmUtils.hpp"
 
 std::shared_ptr<FaultyFileDetector> g_faulty_detector_instance = nullptr;
 
@@ -66,28 +67,6 @@ void FaultyFileDetector::resource_parse_open_stream_failed_hook_wrapper(safetyho
     s_instance->resource_parse_open_stream_failed_hook(ctx);
 }
 
-template <typename T>
-T* get_register_value(safetyhook::Context& ctx, uint8_t reg) {
-    switch (reg) {
-        case NDR_RAX: return reinterpret_cast<T*>(ctx.rax);
-        case NDR_RBX: return reinterpret_cast<T*>(ctx.rbx);
-        case NDR_RCX: return reinterpret_cast<T*>(ctx.rcx);
-        case NDR_RDX: return reinterpret_cast<T*>(ctx.rdx);
-        case NDR_RSI: return reinterpret_cast<T*>(ctx.rsi);
-        case NDR_RDI: return reinterpret_cast<T*>(ctx.rdi);
-        case NDR_RBP: return reinterpret_cast<T*>(ctx.rbp);
-        case NDR_RSP: return reinterpret_cast<T*>(ctx.rsp);
-        case NDR_R8:  return reinterpret_cast<T*>(ctx.r8);
-        case NDR_R9:  return reinterpret_cast<T*>(ctx.r9);
-        case NDR_R10: return reinterpret_cast<T*>(ctx.r10);
-        case NDR_R11: return reinterpret_cast<T*>(ctx.r11);
-        case NDR_R12: return reinterpret_cast<T*>(ctx.r12);
-        case NDR_R13: return reinterpret_cast<T*>(ctx.r13);
-        case NDR_R14: return reinterpret_cast<T*>(ctx.r14);
-        case NDR_R15: return reinterpret_cast<T*>(ctx.r15);
-        default: return nullptr;
-    }
-}
 
 FaultyFileDetector::FaultyFileDetector() {
     if (s_instance == nullptr) {
@@ -405,7 +384,7 @@ void FaultyFileDetector::resource_parse_open_stream_failed_hook(safetyhook::Cont
         return;
     }
 
-    REResource_Via_Raw* resource = get_register_value<REResource_Via_Raw>(ctx, m_resource_open_failed_register);
+    REResource_Via_Raw* resource = disasm_utils::get_register_value<REResource_Via_Raw*>(ctx, m_resource_open_failed_register);
 
     if (resource) {
         try_add_to_faulty_list(resource->path, FaultyTier::Severe, FaultyReason::MissingFile);

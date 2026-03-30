@@ -16,9 +16,7 @@
 #include "Hooks.hpp"
 
 #include "IntegrityCheckBypass.hpp"
-
-template <typename T = uint64_t>
-T get_register_value(safetyhook::Context& context, int reg);
+#include "DisasmUtils.hpp"
 
 struct IntegrityCheckPattern {
     std::string pat{};
@@ -787,9 +785,9 @@ void IntegrityCheckBypass::pak_store_flags_hook(safetyhook::Context& context) {
     s_pak_flags_value = std::nullopt;
 
     if (s_pak_load_check_insn.Operands[0].Type == ND_OP_REG) {
-        s_pak_flags_value = get_register_value<std::uint8_t>(context, s_pak_load_check_insn.Operands[0].Info.Register.Reg);
+        s_pak_flags_value = disasm_utils::get_register_value<std::uint8_t>(context, s_pak_load_check_insn.Operands[0].Info.Register.Reg);
     } else if (s_pak_load_check_insn.Operands[0].Type == ND_OP_MEM) {
-        auto base_reg_value = get_register_value<uintptr_t>(context, s_pak_load_check_insn.Operands[0].Info.Memory.Base);
+        auto base_reg_value = disasm_utils::get_register_value<uintptr_t>(context, s_pak_load_check_insn.Operands[0].Info.Memory.Base);
         auto displacement = s_pak_load_check_insn.Operands[0].Info.Memory.Disp;
 
         s_pak_flags_value = *(std::uint8_t*)(base_reg_value + displacement);
@@ -1601,18 +1599,18 @@ void validate_job_func(SafetyHookContext& ctx) {
         // UD2
         if (*reinterpret_cast<uint16_t*>(func_ptr) == 0x0B0F) {
             // if we already have a cached original, restore it to prevent crashes.
-            const auto original_func_ptr = get_submit_descriptor_original_func_ptr(get_register_value(ctx, reg));
+            const auto original_func_ptr = get_submit_descriptor_original_func_ptr(disasm_utils::get_register_value(ctx, reg));
             if (original_func_ptr != 0 && original_func_ptr != func_ptr) {
                 ctx.rax = original_func_ptr;
-                *(uintptr_t*)(get_register_value(ctx, reg) + 8) = original_func_ptr; // restore the func ptr in the descriptor as well.
-                SPDLOG_INFO("[IntegrityCheckBypass]: Restored descriptor 0x{:X} func pointer to 0x{:X} in job func validation (was 0x{:X})", get_register_value(ctx, reg), original_func_ptr, func_ptr);
+                *(uintptr_t*)(disasm_utils::get_register_value(ctx, reg) + 8) = original_func_ptr; // restore the func ptr in the descriptor as well.
+                SPDLOG_INFO("[IntegrityCheckBypass]: Restored descriptor 0x{:X} func pointer to 0x{:X} in job func validation (was 0x{:X})", disasm_utils::get_register_value(ctx, reg), original_func_ptr, func_ptr);
             } else {
                 ctx.rax = reinterpret_cast<uintptr_t>(&noop_job);
                 //SPDLOG_INFO("[IntegrityCheckBypass]: Caught integrity check job submission at call site, skipping! FuncPtr: 0x{:X}", func_ptr);
             }
         } else {
             // also cache the original here for later.
-            remember_submit_descriptor_original_func_ptr(get_register_value(ctx, reg), func_ptr);
+            remember_submit_descriptor_original_func_ptr(disasm_utils::get_register_value(ctx, reg), func_ptr);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         ctx.rax = reinterpret_cast<uintptr_t>(&noop_job);
@@ -2718,57 +2716,12 @@ void IntegrityCheckBypass::directstorage_open_pak_hook_wrappper(safetyhook::Cont
     }
 }
 
-template <typename T>
-T get_register_value(safetyhook::Context& context, int reg) {
-    switch (reg) {
-    case NDR_RAX: return (T)context.rax;
-    case NDR_RCX: return (T)context.rcx;
-    case NDR_RDX: return (T)context.rdx;
-    case NDR_RBX: return (T)context.rbx;
-    case NDR_RSP: return (T)context.rsp;
-    case NDR_RBP: return (T)context.rbp;
-    case NDR_RSI: return (T)context.rsi;
-    case NDR_RDI: return (T)context.rdi;
-    case NDR_R8:  return (T)context.r8;
-    case NDR_R9:  return (T)context.r9;
-    case NDR_R10: return (T)context.r10;
-    case NDR_R11: return (T)context.r11;
-    case NDR_R12: return (T)context.r12;
-    case NDR_R13: return (T)context.r13;
-    case NDR_R14: return (T)context.r14;
-    case NDR_R15: return (T)context.r15;
-    default: return (T)0;
-    }
-}
-
-template <typename T>
-void set_register_value(safetyhook::Context& context, int reg, T value) {
-    switch (reg) {
-    case NDR_RAX: context.rax = (uint64_t)value; break;
-    case NDR_RCX: context.rcx = (uint64_t)value; break;
-    case NDR_RDX: context.rdx = (uint64_t)value; break;
-    case NDR_RBX: context.rbx = (uint64_t)value; break;
-    case NDR_RSP: context.rsp = (uint64_t)value; break;
-    case NDR_RBP: context.rbp = (uint64_t)value; break;
-    case NDR_RSI: context.rsi = (uint64_t)value; break;
-    case NDR_RDI: context.rdi = (uint64_t)value; break;
-    case NDR_R8:  context.r8 = (uint64_t)value; break;
-    case NDR_R9:  context.r9 = (uint64_t)value; break;
-    case NDR_R10: context.r10 = (uint64_t)value; break;
-    case NDR_R11: context.r11 = (uint64_t)value; break;
-    case NDR_R12: context.r12 = (uint64_t)value; break;
-    case NDR_R13: context.r13 = (uint64_t)value; break;
-    case NDR_R14: context.r14 = (uint64_t)value; break;
-    case NDR_R15: context.r15 = (uint64_t)value; break;
-    }
-}
-
 void IntegrityCheckBypass::correct_pak_load_path(safetyhook::Context& context, int register_index) {
     if (!m_load_pak_directory || !m_load_pak_directory->value() || m_custom_pak_in_directory_paths.empty()) {
         return;
     }
 
-    auto path_ptr = get_register_value<wchar_t*>(context, register_index);
+    auto path_ptr = disasm_utils::get_register_value<wchar_t*>(context, register_index);
     if (path_ptr != nullptr) {
         std::wstring_view path_view(path_ptr);
         if (path_view.ends_with(PAK_EXTENSION_NAME_W)) {
@@ -2783,7 +2736,7 @@ void IntegrityCheckBypass::correct_pak_load_path(safetyhook::Context& context, i
                         auto &pak_path = m_custom_pak_in_directory_paths[custom_directory_pak_index];
                         spdlog::info("[IntegrityCheckBypass]: Redirecting load of {} to custom pak at path: {}", utility::narrow(filename_copy), utility::narrow(pak_path));
                     
-                        set_register_value(context, register_index, pak_path.c_str());
+                        disasm_utils::set_register_value(context, register_index, pak_path.c_str());
                     } else {
                         spdlog::error("[IntegrityCheckBypass]: Patch number {} is out of range for PAK directory's PAK! (index {})", patch_num, custom_directory_pak_index);
                     }
