@@ -504,7 +504,7 @@ REFramework::REFramework(HMODULE reframework_module)
     startup_lookup_thread->detach();
 #endif
 
-#if TDB_VER >= 81
+#if FAULTY_FILE_DETECTOR_ENABLE
     FaultyFileDetector::early_init();
 #endif
 
