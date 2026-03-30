@@ -13,8 +13,10 @@
 #include <spdlog/spdlog.h>
 #include <utility/Scan.hpp>
 
+#include <sdk/TDBVer.hpp>
+
 #if TDB_VER >= 81
-#define FAULTY_FILE_DETECTOR_ENABLED
+#define FAULTY_FILE_DETECTOR_ENABLED 1
 #endif
 
 class FaultyFileDetector : public Mod {
