@@ -504,6 +504,8 @@ REFramework::REFramework(HMODULE reframework_module)
     startup_lookup_thread->detach();
 #endif
 
+    LooseTextureLoader::get().early_initialize();
+
 #if FAULTY_FILE_DETECTOR_ENABLED
     FaultyFileDetector::early_init();
 #endif
